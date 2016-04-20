@@ -624,6 +624,24 @@ class QUEUE_NODE {
     unordered_map<VkEvent, VkPipelineStageFlags> eventToStageMap;
 };
 
+
+
+
+// Individual query state
+struct QUERY_INFO_NODE {
+    std::vector<VkEvent> waitedEventsBeforeQueryReset;
+    bool available;
+    bool reset;
+};
+
+// Holds command buffers pending query information. Used POC array here for perf reasons.
+struct CMD_BUFFER_QUERYPOOL_NODE {
+    std::unique_ptr<QUERY_INFO_NODE[]> queryInfo;
+    uint32_t queryInfoCount;
+    VkQueryPool queryPool;
+    CMD_BUFFER_QUERYPOOL_NODE() : queryInfoCount(0){};
+};
+
 class QUERY_POOL_NODE : public BASE_NODE {
   public:
     VkQueryPoolCreateInfo createInfo;
@@ -914,8 +932,15 @@ struct GLOBAL_CB_NODE {
     vector<VkEvent> waitedEvents;
     vector<VkSemaphore> semaphores;
     vector<VkEvent> events;
+
+    // LUGMAL -- new container for following two maps
+    unordered_map<VkQueryPool, CMD_BUFFER_QUERYPOOL_NODE> cmdBufQueryInfo;
+
+    // LUGMAL -- remove after changeover
     unordered_map<QueryObject, vector<VkEvent>> waitedEventsBeforeQueryReset;
     unordered_map<QueryObject, bool> queryToStateMap; // 0 is unavailable, 1 is available
+
+
     unordered_set<QueryObject> activeQueries;
     unordered_set<QueryObject> startedQueries;
     unordered_map<ImageSubresourcePair, IMAGE_CMD_BUF_LAYOUT_NODE> imageLayoutMap;

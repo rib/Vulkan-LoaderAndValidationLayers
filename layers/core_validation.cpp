@@ -36,6 +36,7 @@
 
 // Turn on mem_tracker merged code
 #define MTMERGESOURCE 1
+#include <chrono>
 
 #include <SPIRV/spirv.hpp>
 #include <algorithm>
@@ -4398,8 +4399,9 @@ static void resetCB(layer_data *dev_data, const VkCommandBuffer cb) {
         pCB->waitedEvents.clear();
         pCB->semaphores.clear();
         pCB->events.clear();
-        pCB->waitedEventsBeforeQueryReset.clear();
-        pCB->queryToStateMap.clear();
+        // pCB->waitedEventsBeforeQueryReset.clear();
+        // pCB->queryToStateMap.clear();
+        pCB->cmdBufQueryInfo.clear();
         pCB->activeQueries.clear();
         pCB->startedQueries.clear();
         pCB->imageLayoutMap.clear();
@@ -4899,8 +4901,13 @@ static void decrementResources(layer_data *my_data, VkCommandBuffer cmdBuffer) {
             eventNode->second.in_use.fetch_sub(1);
         }
     }
-    for (auto queryStatePair : pCB->queryToStateMap) {
-        my_data->queryToStateMap[queryStatePair.first] = queryStatePair.second;
+    for (auto &cbQueryPool : pCB->cmdBufQueryInfo) {
+        for (uint32_t i = 0; i < cbQueryPool.second.queryInfoCount; i++) {
+            if (cbQueryPool.second.queryInfo[i].reset == true) {
+                QueryObject query = { cbQueryPool.second.queryPool, i };
+                my_data->queryToStateMap[query] = cbQueryPool.second.queryInfo[i].available;
+            }
+        }
     }
     for (auto eventStagePair : pCB->eventToStageMap) {
         my_data->eventMap[eventStagePair.first].stageMask = eventStagePair.second;
@@ -5353,26 +5360,33 @@ static void initializeAndTrackMemory(layer_data *dev_data, VkDeviceMemory mem, V
     }
 }
 #endif
+
 // Note: This function assumes that the global lock is held by the calling
 // thread.
 static bool cleanInFlightCmdBuffer(layer_data *my_data, VkCommandBuffer cmdBuffer) {
     bool skip_call = false;
     GLOBAL_CB_NODE *pCB = getCBNode(my_data, cmdBuffer);
     if (pCB) {
-        for (auto queryEventsPair : pCB->waitedEventsBeforeQueryReset) {
-            for (auto event : queryEventsPair.second) {
-                if (my_data->eventMap[event].needsSignaled) {
-                    skip_call |= log_msg(my_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         VK_DEBUG_REPORT_OBJECT_TYPE_QUERY_POOL_EXT, 0, 0, DRAWSTATE_INVALID_QUERY, "DS",
-                                         "Cannot get query results on queryPool %" PRIu64
-                                         " with index %d which was guarded by unsignaled event %" PRIu64 ".",
-                                         (uint64_t)(queryEventsPair.first.pool), queryEventsPair.first.index, (uint64_t)(event));
+
+        // Failure because cbQueryPoolNode is making copy of pointer?
+        for (auto &cbQueryPoolNode : pCB->cmdBufQueryInfo) {
+            for (uint32_t i = 0; i < cbQueryPoolNode.second.queryInfoCount; i++) {
+                for (auto event : cbQueryPoolNode.second.queryInfo[i].waitedEventsBeforeQueryReset) {
+                        if (my_data->eventMap[event].needsSignaled) {
+                            skip_call |=
+                                log_msg(my_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                        VK_DEBUG_REPORT_OBJECT_TYPE_QUERY_POOL_EXT, 0, 0, DRAWSTATE_INVALID_QUERY, "DS",
+                                        "Cannot get query results on queryPool %" PRIu64
+                                        " with index %d which was guarded by unsignaled event %" PRIu64 ".",
+                                        (uint64_t)(cbQueryPoolNode.second.queryPool), i, (uint64_t)(event));
+                        }
                 }
             }
         }
     }
     return skip_call;
 }
+
 // Remove given cmd_buffer from the global inFlight set.
 //  Also, if given queue is valid, then remove the cmd_buffer from that queues
 //  inFlightCmdBuffer set. Finally, check all other queues and if given cmd_buffer
@@ -5624,6 +5638,13 @@ VK_LAYER_EXPORT VKAPI_ATTR void VKAPI_CALL vkDestroyEvent(VkDevice device, VkEve
 
 VK_LAYER_EXPORT VKAPI_ATTR void VKAPI_CALL
 vkDestroyQueryPool(VkDevice device, VkQueryPool queryPool, const VkAllocationCallbacks *pAllocator) {
+    layer_data *dev_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    auto queryInfo = dev_data->queryPoolMap.find(queryPool);
+    if (queryInfo != dev_data->queryPoolMap.end()) {
+        std::lock_guard<std::mutex> lock(global_lock);
+        dev_data->queryPoolMap.erase(queryPool);
+    }
+
     get_my_data_ptr(get_dispatch_key(device), layer_data_map)
         ->device_dispatch_table->DestroyQueryPool(device, queryPool, pAllocator);
     // TODO : Clean up any internal data structures using this obj.
@@ -5653,16 +5674,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice device, VkQueryPoo
                 queryToStateElement->second) {
                 for (auto cmdBuffer : queryElement->second) {
                     pCB = getCBNode(dev_data, cmdBuffer);
-                    auto queryEventElement = pCB->waitedEventsBeforeQueryReset.find(query);
-                    if (queryEventElement == pCB->waitedEventsBeforeQueryReset.end()) {
-                        skip_call |= log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                             VK_DEBUG_REPORT_OBJECT_TYPE_QUERY_POOL_EXT, 0, __LINE__, DRAWSTATE_INVALID_QUERY, "DS",
-                                             "Cannot get query results on queryPool %" PRIu64 " with index %d which is in flight.",
-                                             (uint64_t)(queryPool), firstQuery + i);
-                    } else {
-                        for (auto event : queryEventElement->second) {
+
+
+                    auto cbQueryPool = pCB->cmdBufQueryInfo.find(queryPool);
+                    if ((cbQueryPool != pCB->cmdBufQueryInfo.end()) && (cbQueryPool->second.queryInfo[query.index].reset == true)) {
+                        for (auto event : cbQueryPool->second.queryInfo[query.index].waitedEventsBeforeQueryReset) {
                             dev_data->eventMap[event].needsSignaled = true;
                         }
+                    } else {
+                            skip_call |= log_msg(dev_data->report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                                 VK_DEBUG_REPORT_OBJECT_TYPE_QUERY_POOL_EXT, 0, __LINE__, DRAWSTATE_INVALID_QUERY, "DS",
+                                                 "Cannot get query results on queryPool %" PRIu64 " with index %d which is in flight.",
+                                                 (uint64_t)(queryPool), firstQuery + i);
                     }
                 }
                 // Unavailable and in flight
@@ -6028,12 +6051,14 @@ VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateCommandPool(VkDevice devi
 
 VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo *pCreateInfo,
                                                                  const VkAllocationCallbacks *pAllocator, VkQueryPool *pQueryPool) {
-
     layer_data *dev_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
     VkResult result = dev_data->device_dispatch_table->CreateQueryPool(device, pCreateInfo, pAllocator, pQueryPool);
+
     if (result == VK_SUCCESS) {
+        // LUGMAL std::unique_ptr<QUERY_INFO_NODE[]> queryInfo(new QUERY_INFO_NODE[pCreateInfo->queryCount]);
         std::lock_guard<std::mutex> lock(global_lock);
         dev_data->queryPoolMap[*pQueryPool].createInfo = *pCreateInfo;
+        // LUGMAL  dev_data->queryPoolMap[*pQueryPool].queryInfo = std::move(queryInfo);
     }
     return result;
 }
@@ -8624,18 +8649,70 @@ VK_LAYER_EXPORT VKAPI_ATTR void VKAPI_CALL vkCmdEndQuery(VkCommandBuffer command
         dev_data->device_dispatch_table->CmdEndQuery(commandBuffer, queryPool, slot);
 }
 
+double PCFreq = 0.0;
+__int64 CounterStart = 0;
+
+void StartCounter()
+{
+    LARGE_INTEGER li;
+    if (!QueryPerformanceFrequency(&li))
+        cout << "QueryPerformanceFrequency failed!\n";
+
+    PCFreq = double(li.QuadPart) / 1000.0;
+
+    QueryPerformanceCounter(&li);
+    CounterStart = li.QuadPart;
+}
+double GetCounter()
+{
+    LARGE_INTEGER li;
+    QueryPerformanceCounter(&li);
+    return double(li.QuadPart - CounterStart) / PCFreq;
+}
+
+#include <array>
 VK_LAYER_EXPORT VKAPI_ATTR void VKAPI_CALL
 vkCmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount) {
     bool skipCall = false;
+
+    double time;
+    double time2;
+    double time3;
+    double time4;
+
     layer_data *dev_data = get_my_data_ptr(get_dispatch_key(commandBuffer), layer_data_map);
     std::unique_lock<std::mutex> lock(global_lock);
     GLOBAL_CB_NODE *pCB = getCBNode(dev_data, commandBuffer);
+
     if (pCB) {
-        for (uint32_t i = 0; i < queryCount; i++) {
-            QueryObject query = {queryPool, firstQuery + i};
-            pCB->waitedEventsBeforeQueryReset[query] = pCB->waitedEvents;
-            pCB->queryToStateMap[query] = 0;
+        auto queryPoolNode = dev_data->queryPoolMap.find(queryPool);
+        if (queryPoolNode != dev_data->queryPoolMap.end()) {
+            // No entry in CB's map for this command pool, create one
+            CMD_BUFFER_QUERYPOOL_NODE *cbQueryNode = NULL;
+            auto cmdBufQueryPoolNode = pCB->cmdBufQueryInfo.find(queryPool);
+            if (cmdBufQueryPoolNode == pCB->cmdBufQueryInfo.end()) {
+
+                cbQueryNode = &pCB->cmdBufQueryInfo[queryPool];
+                cbQueryNode->queryPool = queryPool;
+                cbQueryNode->queryInfoCount = queryPoolNode->second.createInfo.queryCount;
+                std::unique_ptr<QUERY_INFO_NODE[]> queryInfo(new QUERY_INFO_NODE[cbQueryNode->queryInfoCount]);
+                cbQueryNode->queryInfo = std::move(queryInfo);
+                // Mark entries as uninitialized
+                for (uint32_t i = 0; i < cbQueryNode->queryInfoCount; i++) {
+                    cbQueryNode->queryInfo[i].reset = false;
+                }
+            } else {
+                cbQueryNode = &cmdBufQueryPoolNode->second;
+            }
+
+            // Fill in reset info for selected queryPool entries
+            for (uint32_t i = firstQuery; i < firstQuery + queryCount; i++) {
+                cbQueryNode->queryInfo[i].reset = true;
+                cbQueryNode->queryInfo[i].available = false;
+                cbQueryNode->queryInfo[i].waitedEventsBeforeQueryReset = pCB->waitedEvents;
+            }
         }
+
         if (pCB->state == CB_RECORDING) {
             skipCall |= addCmd(dev_data, pCB, CMD_RESETQUERYPOOL, "VkCmdResetQueryPool()");
         } else {
