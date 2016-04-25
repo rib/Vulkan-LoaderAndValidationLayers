@@ -85,6 +85,35 @@ struct layer_data {
     layer_data()
         : report_data(nullptr), wsi_enabled(false), objtrack_extensions_enabled(false), num_tmp_callbacks(0),
           tmp_dbg_create_infos(nullptr), tmp_callbacks(nullptr){};
+
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkInstanceMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkPhysicalDeviceMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDeviceMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkQueueMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkCommandBufferMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkCommandPoolMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkFenceMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDeviceMemoryMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkBufferMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkImageMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkSemaphoreMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkEventMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkQueryPoolMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkBufferViewMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkImageViewMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkShaderModuleMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkPipelineCacheMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkPipelineLayoutMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkPipelineMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDescriptorSetLayoutMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkSamplerMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDescriptorPoolMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDescriptorSetMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkRenderPassMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkFramebufferMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkSwapchainKHRMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkSurfaceKHRMap;
+    unordered_map<uint64_t, OBJTRACK_NODE*> VkDebugReportCallbackEXTMap;
 };
 
 struct instExts {
@@ -380,18 +409,6 @@ static VkBool32 validate_status(VkDevice dispatchable_object, VkFence object, Vk
     ObjectStatusFlags status_mask, ObjectStatusFlags status_flag, VkFlags msg_flags, OBJECT_TRACK_ERROR  error_code,
     const char         *fail_msg);
 #endif
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkPhysicalDeviceMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkDeviceMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkImageMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkQueueMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkDescriptorSetMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkBufferMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkFenceMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkSemaphoreMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkCommandPoolMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkCommandBufferMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkSwapchainKHRMap;
-extern unordered_map<uint64_t, OBJTRACK_NODE *> VkSurfaceKHRMap;
 
 static void create_physical_device(VkInstance dispatchable_object, VkPhysicalDevice vkObj, VkDebugReportObjectTypeEXT objType) {
     log_msg(mdd(dispatchable_object), VK_DEBUG_REPORT_INFORMATION_BIT_EXT, objType, reinterpret_cast<uint64_t>(vkObj), __LINE__,
@@ -403,7 +420,8 @@ static void create_physical_device(VkInstance dispatchable_object, VkPhysicalDev
     pNewObjNode->belongsTo = (uint64_t)dispatchable_object;
     pNewObjNode->status = OBJSTATUS_NONE;
     pNewObjNode->vkObj = reinterpret_cast<uint64_t>(vkObj);
-    VkPhysicalDeviceMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(dispatchable_object), layer_data_map);
+    my_data->VkPhysicalDeviceMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -420,7 +438,8 @@ static void create_surface_khr(VkInstance dispatchable_object, VkSurfaceKHR vkOb
     pNewObjNode->belongsTo = (uint64_t)dispatchable_object;
     pNewObjNode->status = OBJSTATUS_NONE;
     pNewObjNode->vkObj = (uint64_t)(vkObj);
-    VkSurfaceKHRMap[(uint64_t)vkObj] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(dispatchable_object), layer_data_map);
+    my_data->VkSurfaceKHRMap[(uint64_t)vkObj] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -428,8 +447,9 @@ static void create_surface_khr(VkInstance dispatchable_object, VkSurfaceKHR vkOb
 
 static void destroy_surface_khr(VkInstance dispatchable_object, VkSurfaceKHR object) {
     uint64_t object_handle = (uint64_t)(object);
-    if (VkSurfaceKHRMap.find(object_handle) != VkSurfaceKHRMap.end()) {
-        OBJTRACK_NODE *pNode = VkSurfaceKHRMap[(uint64_t)object];
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(dispatchable_object), layer_data_map);
+    if (my_data->VkSurfaceKHRMap.find(object_handle) != my_data->VkSurfaceKHRMap.end()) {
+        OBJTRACK_NODE *pNode = my_data->VkSurfaceKHRMap[(uint64_t)object];
         uint32_t objIndex = objTypeToIndex(pNode->objType);
         assert(numTotalObjs > 0);
         numTotalObjs--;
@@ -441,7 +461,7 @@ static void destroy_surface_khr(VkInstance dispatchable_object, VkSurfaceKHR obj
                 string_VkDebugReportObjectTypeEXT(pNode->objType), (uint64_t)(object), numTotalObjs, numObjs[objIndex],
                 string_VkDebugReportObjectTypeEXT(pNode->objType));
         delete pNode;
-        VkSurfaceKHRMap.erase(object_handle);
+        my_data->VkSurfaceKHRMap.erase(object_handle);
     } else {
         log_msg(mdd(dispatchable_object), VK_DEBUG_REPORT_ERROR_BIT_EXT, (VkDebugReportObjectTypeEXT)0, object_handle, __LINE__,
                 OBJTRACK_NONE, "OBJTRACK",
@@ -465,7 +485,8 @@ static void alloc_command_buffer(VkDevice device, VkCommandPool commandPool, VkC
     } else {
         pNewObjNode->status = OBJSTATUS_NONE;
     }
-    VkCommandBufferMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    my_data->VkCommandBufferMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -473,8 +494,9 @@ static void alloc_command_buffer(VkDevice device, VkCommandPool commandPool, VkC
 
 static void free_command_buffer(VkDevice device, VkCommandPool commandPool, VkCommandBuffer commandBuffer) {
     uint64_t object_handle = reinterpret_cast<uint64_t>(commandBuffer);
-    if (VkCommandBufferMap.find(object_handle) != VkCommandBufferMap.end()) {
-        OBJTRACK_NODE *pNode = VkCommandBufferMap[(uint64_t)commandBuffer];
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    if (my_data->VkCommandBufferMap.find(object_handle) != my_data->VkCommandBufferMap.end()) {
+        OBJTRACK_NODE *pNode = my_data->VkCommandBufferMap[(uint64_t)commandBuffer];
 
         if (pNode->parentObj != (uint64_t)(commandPool)) {
             log_msg(mdd(device), VK_DEBUG_REPORT_ERROR_BIT_EXT, pNode->objType, object_handle, __LINE__,
@@ -494,7 +516,7 @@ static void free_command_buffer(VkDevice device, VkCommandPool commandPool, VkCo
                     string_VkDebugReportObjectTypeEXT(pNode->objType), reinterpret_cast<uint64_t>(commandBuffer), numTotalObjs,
                     numObjs[objIndex], string_VkDebugReportObjectTypeEXT(pNode->objType));
             delete pNode;
-            VkCommandBufferMap.erase(object_handle);
+            my_data->VkCommandBufferMap.erase(object_handle);
         }
     } else {
         log_msg(mdd(device), VK_DEBUG_REPORT_ERROR_BIT_EXT, (VkDebugReportObjectTypeEXT)0, object_handle, __LINE__, OBJTRACK_NONE,
@@ -515,7 +537,8 @@ static void alloc_descriptor_set(VkDevice device, VkDescriptorPool descriptorPoo
     pNewObjNode->status = OBJSTATUS_NONE;
     pNewObjNode->vkObj = (uint64_t)(vkObj);
     pNewObjNode->parentObj = (uint64_t)descriptorPool;
-    VkDescriptorSetMap[(uint64_t)vkObj] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    my_data->VkDescriptorSetMap[(uint64_t)vkObj] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -523,8 +546,9 @@ static void alloc_descriptor_set(VkDevice device, VkDescriptorPool descriptorPoo
 
 static void free_descriptor_set(VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorSet descriptorSet) {
     uint64_t object_handle = (uint64_t)(descriptorSet);
-    if (VkDescriptorSetMap.find(object_handle) != VkDescriptorSetMap.end()) {
-        OBJTRACK_NODE *pNode = VkDescriptorSetMap[(uint64_t)descriptorSet];
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    if (my_data->VkDescriptorSetMap.find(object_handle) != my_data->VkDescriptorSetMap.end()) {
+        OBJTRACK_NODE *pNode = my_data->VkDescriptorSetMap[(uint64_t)descriptorSet];
 
         if (pNode->parentObj != (uint64_t)(descriptorPool)) {
             log_msg(mdd(device), VK_DEBUG_REPORT_ERROR_BIT_EXT, pNode->objType, object_handle, __LINE__,
@@ -543,7 +567,7 @@ static void free_descriptor_set(VkDevice device, VkDescriptorPool descriptorPool
                     string_VkDebugReportObjectTypeEXT(pNode->objType), (uint64_t)(descriptorSet), numTotalObjs, numObjs[objIndex],
                     string_VkDebugReportObjectTypeEXT(pNode->objType));
             delete pNode;
-            VkDescriptorSetMap.erase(object_handle);
+            my_data->VkDescriptorSetMap.erase(object_handle);
         }
     } else {
         log_msg(mdd(device), VK_DEBUG_REPORT_ERROR_BIT_EXT, (VkDebugReportObjectTypeEXT)0, object_handle, __LINE__, OBJTRACK_NONE,
@@ -562,7 +586,8 @@ static void create_queue(VkDevice dispatchable_object, VkQueue vkObj, VkDebugRep
     pNewObjNode->belongsTo = (uint64_t)dispatchable_object;
     pNewObjNode->status = OBJSTATUS_NONE;
     pNewObjNode->vkObj = reinterpret_cast<uint64_t>(vkObj);
-    VkQueueMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(dispatchable_object), layer_data_map);
+    my_data->VkQueueMap[reinterpret_cast<uint64_t>(vkObj)] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -591,7 +616,8 @@ static void create_device(VkInstance dispatchable_object, VkDevice vkObj, VkDebu
     pNewObjNode->objType = objType;
     pNewObjNode->status = OBJSTATUS_NONE;
     pNewObjNode->vkObj = (uint64_t)(vkObj);
-    VkDeviceMap[(uint64_t)vkObj] = pNewObjNode;
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(dispatchable_object), layer_data_map);
+    my_data->VkDeviceMap[(uint64_t)vkObj] = pNewObjNode;
     uint32_t objIndex = objTypeToIndex(objType);
     numObjs[objIndex]++;
     numTotalObjs++;
@@ -677,8 +703,8 @@ VkResult explicit_CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *p
 
     createDeviceRegisterExtensions(pCreateInfo, *pDevice);
 
-    if (VkPhysicalDeviceMap.find((uint64_t)gpu) != VkPhysicalDeviceMap.end()) {
-        OBJTRACK_NODE *pNewObjNode = VkPhysicalDeviceMap[(uint64_t)gpu];
+    if (my_instance_data->VkPhysicalDeviceMap.find((uint64_t)gpu) != my_instance_data->VkPhysicalDeviceMap.end()) {
+        OBJTRACK_NODE *pNewObjNode = my_instance_data->VkPhysicalDeviceMap[(uint64_t)gpu];
         create_device((VkInstance)pNewObjNode->belongsTo, *pDevice, VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT);
     }
 
@@ -897,8 +923,9 @@ void explicit_DestroyDescriptorPool(VkDevice device, VkDescriptorPool descriptor
     // A DescriptorPool's descriptor sets are implicitly deleted when the pool is deleted.
     // Remove this pool's descriptor sets from our descriptorSet map.
     lock.lock();
-    unordered_map<uint64_t, OBJTRACK_NODE *>::iterator itr = VkDescriptorSetMap.begin();
-    while (itr != VkDescriptorSetMap.end()) {
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    unordered_map<uint64_t, OBJTRACK_NODE *>::iterator itr = my_data->VkDescriptorSetMap.begin();
+    while (itr != my_data->VkDescriptorSetMap.end()) {
         OBJTRACK_NODE *pNode = (*itr).second;
         auto del_itr = itr++;
         if (pNode->parentObj == (uint64_t)(descriptorPool)) {
@@ -922,9 +949,10 @@ void explicit_DestroyCommandPool(VkDevice device, VkCommandPool commandPool, con
     lock.lock();
     // A CommandPool's command buffers are implicitly deleted when the pool is deleted.
     // Remove this pool's cmdBuffers from our cmd buffer map.
-    unordered_map<uint64_t, OBJTRACK_NODE *>::iterator itr = VkCommandBufferMap.begin();
+    layer_data *my_data = get_my_data_ptr(get_dispatch_key(device), layer_data_map);
+    unordered_map<uint64_t, OBJTRACK_NODE *>::iterator itr = my_data->VkCommandBufferMap.begin();
     unordered_map<uint64_t, OBJTRACK_NODE *>::iterator del_itr;
-    while (itr != VkCommandBufferMap.end()) {
+    while (itr != my_data->VkCommandBufferMap.end()) {
         OBJTRACK_NODE *pNode = (*itr).second;
         del_itr = itr++;
         if (pNode->parentObj == (uint64_t)(commandPool)) {
