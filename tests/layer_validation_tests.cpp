@@ -3518,6 +3518,30 @@ TEST_F(VkLayerTest, RenderPassInitialLayoutUndefined) {
     vkDestroyImageView(m_device->device(), view, nullptr);
 }
 
+TEST_F(VkLayerTest, TonyGH650Test) {
+    TEST_DESCRIPTION("Create 3 command buffers each with an image layout transition and submit them in various orders");
+
+    m_errorMonitor->ExpectSuccess();
+
+    ASSERT_NO_FATAL_FAILURE(InitState());
+    VkImageObj image(m_device);
+    image.init(32, 32, VK_FORMAT_D24_UNORM_S8_UINT,
+        0x26,
+        VK_IMAGE_TILING_OPTIMAL, 0);
+    VkCommandBufferObj cmd_u_to_g(m_device, m_commandPool);
+    VkCommandBufferObj cmd_g_to_cao(m_device, m_commandPool);
+    VkCommandBufferObj cmd_g_to_sroo(m_device, m_commandPool);
+    cmd_u_to_g.BeginCommandBuffer();
+    image.SetLayout(&cmd_u_to_g, 0x6, VK_IMAGE_LAYOUT_GENERAL);
+    cmd_u_to_g.EndCommandBuffer();
+    cmd_u_to_g.QueueCommandBuffer();
+
+    cmd_g_to_sroo.BeginCommandBuffer();
+    image.SetLayout(&cmd_g_to_sroo, 0x6, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    cmd_g_to_sroo.EndCommandBuffer();
+    cmd_g_to_sroo.QueueCommandBuffer();
+}
+
 TEST_F(VkLayerTest, RenderPassSubpassZeroTransitionsApplied) {
     TEST_DESCRIPTION("Ensure that CmdBeginRenderPass applies the layout "
                      "transitions for the first subpass");
