@@ -3519,7 +3519,8 @@ TEST_F(VkLayerTest, RenderPassInitialLayoutUndefined) {
 }
 
 TEST_F(VkLayerTest, TonyGH650Test) {
-    TEST_DESCRIPTION("Create 3 command buffers each with an image layout transition and submit them in various orders");
+    TEST_DESCRIPTION("Create 3 command buffers each with an image layout"
+                     " transition and submit them in various orders");
 
     m_errorMonitor->ExpectSuccess();
 
@@ -3540,6 +3541,7 @@ TEST_F(VkLayerTest, TonyGH650Test) {
     image.SetLayout(&cmd_g_to_sroo, 0x6, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     cmd_g_to_sroo.EndCommandBuffer();
     cmd_g_to_sroo.QueueCommandBuffer();
+    m_errorMonitor->VerifyNotFound();
 }
 
 TEST_F(VkLayerTest, RenderPassSubpassZeroTransitionsApplied) {
