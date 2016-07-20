@@ -9312,8 +9312,13 @@ TEST_F(VkLayerTest, RenderPassSecondaryCommandBuffersMultipleTimes) {
                          VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
     vkCmdEndRenderPass(m_commandBuffer->GetBufferHandle());
     m_errorMonitor->VerifyNotFound();
-    vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(), &m_renderPassBeginInfo,
-                         VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(),
+                         &m_renderPassBeginInfo,
+                         VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    vkCmdEndRenderPass(m_commandBuffer->GetBufferHandle());
+    m_errorMonitor->VerifyNotFound();
+    vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(),
+                         &m_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
     m_errorMonitor->VerifyNotFound();
     vkCmdEndRenderPass(m_commandBuffer->GetBufferHandle());
     m_errorMonitor->VerifyNotFound();
@@ -11916,6 +11921,26 @@ TEST_F(VkLayerTest, ValidRenderPassAttachmentLayoutWithLoadOp) {
     m_errorMonitor->VerifyNotFound();
 
     vkDestroyRenderPass(m_device->device(), rp, NULL);
+}
+
+TEST_F(VkLayerTest, TwoSecondaryCmdBufferRenderPasses) {
+    TEST_DESCRIPTION("This is a positive test that begins two RenderPass "
+                     "instances in the same primary command buffer with "
+                     "VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS set.");
+    m_errorMonitor->ExpectSuccess();
+    ASSERT_NO_FATAL_FAILURE(InitState());
+    ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
+    BeginCommandBuffer(); // framework implicitly begins the renderpass.
+    vkCmdEndRenderPass(m_commandBuffer->GetBufferHandle()); // end implicit
+    vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(),
+                         &m_renderPassBeginInfo,
+                         VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    vkCmdEndRenderPass(m_commandBuffer->GetBufferHandle());
+    vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(),
+                         &m_renderPassBeginInfo,
+                         VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    EndCommandBuffer(); // This will also implicitly end RenderPass
+    m_errorMonitor->VerifyNotFound();
 }
 #endif // DRAW_STATE_TESTS
 

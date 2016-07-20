@@ -9612,7 +9612,7 @@ VKAPI_ATTR void VKAPI_CALL CmdEndRenderPass(VkCommandBuffer commandBuffer) {
         // Reset renderPass state for this CB
         pCB->activeRenderPass = nullptr;
         pCB->activeSubpass = 0;
-        pCB->activeSubpassContents = VK_SUBPASS_CONTENTS_INLINE;
+        // pCB->activeSubpassContents = VK_SUBPASS_CONTENTS_INLINE;
         pCB->activeFramebuffer = VK_NULL_HANDLE;
     }
     lock.unlock();
