@@ -6396,7 +6396,7 @@ TEST_F(VkLayerTest, DynamicScissorNotBound) {
     m_errorMonitor->VerifyFound();
 }
 
-TEST_F(VkLayerTest, DynamiBlendConstantsNotBound) {
+TEST_F(VkLayerTest, DynamicBlendConstantsNotBound) {
     TEST_DESCRIPTION(
         "Run a simple draw calls to validate failure when Blend Constants "
         "dynamic state is required but not correctly bound.");
