@@ -5285,17 +5285,28 @@ static bool print_memory_range_error(layer_data *dev_data, const uint64_t object
 // Return true if given range intersects with offset and size, else false
 // Prereq : size > 0 and range->end - range->start > 0. Both of these cases should have already resulted
 //  in an error (During MapMemory and AllocateMemory respectively) so not checking them here
-// TODO : Add bool param and handle padding for image/mem overlap check
-static bool rangesIntersect(MEMORY_RANGE const *range, VkDeviceSize offset, VkDeviceSize size) {
-    auto range2_end = offset + size;
-    if ((range->start >= offset && range->start <= (range2_end)) || (range->end >= offset && range->end <= range2_end)) {
-        return true;
+// pad_ranges bool indicates a linear and non-linear comparison which requires padding
+static bool rangesIntersect(layer_data const *dev_data, MEMORY_RANGE const *range, VkDeviceSize offset, VkDeviceSize size, bool pad_ranges) {
+    auto r1_start = range->start;
+    auto r1_end = range->end;
+    auto r2_start = offset;
+    auto r2_end = offset + size - 1;
+    if (pad_ranges) {
+        auto pad_align = dev_data->phys_dev_properties.properties.limits.bufferImageGranularity;
+        if ((r1_end & ~(pad_align - 1)) < (r2_start & ~(pad_align - 1)))
+            return false;
+        if ((r1_start & ~(pad_align - 1)) < (r2_end & ~(pad_align - 1)))
+            return false;
+        skip_call |= print_memory_range_error(dev_data, r)
+    } else {
+        if ((r1_start >= r2_start && r1_start <= r2_end) || (r1_end >= r2_start && r1_end <= r2_end))
+            return true;
     }
     return false;
 }
 
-static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize memoryOffset,
-                                      VkMemoryRequirements memRequirements, bool is_image) {
+static MEMORY_RANGE InsertMemoryRange(layer_data const *dev_data, uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize memoryOffset,
+                                      VkMemoryRequirements memRequirements, bool is_image, bool is_linear) {
     //                                      std::unordered_map<uint64_t, uint32_t> &handle_index_map) {
     MEMORY_RANGE range; // range to be inserted and returned
     std::unordered_map<uint64_t, uint32_t> handle_index_map;
@@ -5307,13 +5318,13 @@ static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info
         range.image = false;
     }
     range.handle = handle;
+    range.linear = is_linear;
     range.memory = mem_info->mem;
     range.start = memoryOffset;
     range.end = memoryOffset + memRequirements.size - 1;
     // Update Memory aliasing prior to inserting new range
-    // TODO : Take into consideration padding for image/buffer aliasing
     for (auto check_range : mem_info->bound_ranges) {
-        if (rangesIntersect(&range, check_range.start, check_range.end - check_range.start)) {
+        if (rangesIntersect(dev_data, &range, check_range.start, check_range.size, check_range.linear == range.linear)) {
             range.aliases.insert(&check_range);
             check_range.aliases.insert(&range);
         }
@@ -5323,14 +5334,14 @@ static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info
     return range;
 }
 
-static MEMORY_RANGE InsertImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
-                                           VkMemoryRequirements mem_reqs) {
-    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, true);
+static MEMORY_RANGE InsertImageMemoryRange(layer_data const *dev_data, uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
+                                           VkMemoryRequirements mem_reqs, bool is_linear) {
+    return InsertMemoryRange(dev_data, handle, mem_info, mem_offset, mem_reqs, true, is_linear);
 }
 
-static MEMORY_RANGE InsertBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
+static MEMORY_RANGE InsertBufferMemoryRange(layer_data const *dev_data, uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
                                             VkMemoryRequirements mem_reqs) {
-    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, false);
+    return InsertMemoryRange(dev_data, handle, mem_info, mem_offset, mem_reqs, false, true);
 }
 
 // Remove MEMORY_RANGE struct for give handle from bound_ranges of mem_info
@@ -5456,7 +5467,7 @@ BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory mem, VkDeviceS
         // Track and validate bound memory range information
         auto mem_info = getMemObjInfo(dev_data, mem);
         if (mem_info) {
-            const MEMORY_RANGE range = InsertBufferMemoryRange(buffer_handle, mem_info, memoryOffset, memRequirements);
+            const MEMORY_RANGE range = InsertBufferMemoryRange(dev_data, buffer_handle, mem_info, memoryOffset, memRequirements);
             // skip_call |= validate_memory_range(dev_data, mem_info->bound_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT);
             skip_call |= ValidateMemoryTypes(dev_data, mem_info, memRequirements.memoryTypeBits, "BindBufferMemory");
         }
@@ -10090,7 +10101,7 @@ static bool ValidateMapImageLayouts(VkDevice device, VkDeviceMemory mem, VkDevic
         // TODO : This can be optimized if we store ranges based on starting address and early exit when we pass our range
         for (auto image_idx_pair : mem_info->image_to_index_map) {
             auto range = mem_info->bound_ranges[image_idx_pair.second];
-            if (rangesIntersect(&range, offset, size)) {
+            if (rangesIntersect(&range, offset, size, false)) {
                 std::vector<VkImageLayout> layouts;
                 if (FindLayouts(dev_data, VkImage(range.handle), layouts)) {
                     for (auto layout : layouts) {
@@ -10272,7 +10283,7 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory(VkDevice device, VkImage image, V
         // Track and validate bound memory range information
         auto mem_info = getMemObjInfo(dev_data, mem);
         if (mem_info) {
-            const MEMORY_RANGE range = InsertImageMemoryRange(image_handle, mem_info, memoryOffset, memRequirements);
+            const MEMORY_RANGE range = InsertImageMemoryRange(dev_data, image_handle, mem_info, memoryOffset, memRequirements, image_node->createInfo.tiling == VK_IMAGE_TILING_LINEAR);
             // skip_call |= validate_memory_range(dev_data, mem_info->bound_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT);
             skip_call |= ValidateMemoryTypes(dev_data, mem_info, memRequirements.memoryTypeBits, "vkBindImageMemory");
         }
