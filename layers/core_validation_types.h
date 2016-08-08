@@ -208,9 +208,12 @@ struct MemRange {
 
 struct MEMORY_RANGE {
     uint64_t handle;
+    bool image; // True for image, false for buffer
     VkDeviceMemory memory;
     VkDeviceSize start;
     VkDeviceSize end;
+    // Set of ptrs to every range aliased with this one
+    std::unordered_set<MEMORY_RANGE *> aliases;
 };
 
 // Data struct for tracking memory object

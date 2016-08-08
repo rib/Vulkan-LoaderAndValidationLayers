@@ -5282,14 +5282,42 @@ static bool print_memory_range_error(layer_data *dev_data, const uint64_t object
 //    return skip_call;
 //}
 
+// Return true if given range intersects with offset and size, else false
+// Prereq : size > 0 and range->end - range->start > 0. Both of these cases should have already resulted
+//  in an error (During MapMemory and AllocateMemory respectively) so not checking them here
+// TODO : Add bool param and handle padding for image/mem overlap check
+static bool rangesIntersect(MEMORY_RANGE const *range, VkDeviceSize offset, VkDeviceSize size) {
+    auto range2_end = offset + size;
+    if ((range->start >= offset && range->start <= (range2_end)) || (range->end >= offset && range->end <= range2_end)) {
+        return true;
+    }
+    return false;
+}
+
 static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize memoryOffset,
-                                      VkMemoryRequirements memRequirements,
-                                      std::unordered_map<uint64_t, uint32_t> &handle_index_map) {
-    MEMORY_RANGE range;
+                                      VkMemoryRequirements memRequirements, bool is_image) {
+    //                                      std::unordered_map<uint64_t, uint32_t> &handle_index_map) {
+    MEMORY_RANGE range; // range to be inserted and returned
+    std::unordered_map<uint64_t, uint32_t> handle_index_map;
+    if (is_image) {
+        handle_index_map = mem_info->image_to_index_map;
+        range.image = true;
+    } else {
+        handle_index_map = mem_info->buffer_to_index_map;
+        range.image = false;
+    }
     range.handle = handle;
     range.memory = mem_info->mem;
     range.start = memoryOffset;
     range.end = memoryOffset + memRequirements.size - 1;
+    // Update Memory aliasing prior to inserting new range
+    // TODO : Take into consideration padding for image/buffer aliasing
+    for (auto check_range : mem_info->bound_ranges) {
+        if (rangesIntersect(&range, check_range.start, check_range.end - check_range.start)) {
+            range.aliases.insert(&check_range);
+            check_range.aliases.insert(&range);
+        }
+    }
     mem_info->bound_ranges.push_back(range);
     handle_index_map[handle] = mem_info->bound_ranges.size() - 1;
     return range;
@@ -5297,23 +5325,38 @@ static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info
 
 static MEMORY_RANGE InsertImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
                                            VkMemoryRequirements mem_reqs) {
-    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, mem_info->image_to_index_map);
+    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, true);
 }
 
 static MEMORY_RANGE InsertBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
                                             VkMemoryRequirements mem_reqs) {
-    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, mem_info->buffer_to_index_map);
+    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, false);
 }
 
-static void RemoveBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) {
-    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + mem_info->buffer_to_index_map[handle]);
-    mem_info->buffer_to_index_map.erase(handle);
+// Remove MEMORY_RANGE struct for give handle from bound_ranges of mem_info
+//  is_image indicates if handle is for image or buffer
+//  This function will also remove the handle-to-index mapping from the appropriate
+//  map and clean up any aliases for range being removed.
+static void RemoveMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, bool is_image) {
+    std::unordered_map<uint64_t, uint32_t> *handle_to_index_map;
+    if (is_image) {
+        handle_to_index_map = &mem_info->image_to_index_map;
+    } else {
+        handle_to_index_map = &mem_info->buffer_to_index_map;
+    }
+    auto index = (*handle_to_index_map)[handle];
+    auto erase_range = mem_info->bound_ranges[index];
+    for (auto alias_range : erase_range.aliases) {
+        alias_range->aliases.erase(&erase_range);
+        erase_range.aliases.erase(alias_range);
+    }
+    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + index);
+    handle_to_index_map->erase(handle);
 }
 
-static void RemoveImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) {
-    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + mem_info->image_to_index_map[handle]);
-    mem_info->image_to_index_map.erase(handle);
-}
+static void RemoveBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) { RemoveMemoryRange(handle, mem_info, false); }
+
+static void RemoveImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) { RemoveMemoryRange(handle, mem_info, true); }
 
 VKAPI_ATTR void VKAPI_CALL DestroyBuffer(VkDevice device, VkBuffer buffer,
                                          const VkAllocationCallbacks *pAllocator) {
@@ -10034,16 +10077,6 @@ CmdExecuteCommands(VkCommandBuffer commandBuffer, uint32_t commandBuffersCount, 
     lock.unlock();
     if (!skip_call)
         dev_data->device_dispatch_table->CmdExecuteCommands(commandBuffer, commandBuffersCount, pCommandBuffers);
-}
-// Return true if given range intersects with offset and size, else false
-// Prereq : size > 0 and range->end - range->start > 0. Both of these cases should have already resulted
-//  in an error (During MapMemory and AllocateMemory respectively) so not checking them here
-static bool rangesIntersect(MEMORY_RANGE const *range, VkDeviceSize offset, VkDeviceSize size) {
-    auto range2_end = offset + size;
-    if ((range->start >= offset && range->start <= (range2_end)) || (range->end >= offset && range->end <= range2_end)) {
-        return true;
-    }
-    return false;
 }
 
 // For any image objects that overlap mapped memory, verify that their layouts are PREINIT or GENERAL
