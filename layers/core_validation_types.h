@@ -223,8 +223,10 @@ struct DEVICE_MEM_INFO {
     VkMemoryAllocateInfo alloc_info;
     std::unordered_set<MT_OBJ_HANDLE_TYPE> obj_bindings;         // objects bound to this memory
     std::unordered_set<VkCommandBuffer> command_buffer_bindings; // cmd buffers referencing this memory
-    std::vector<MEMORY_RANGE> buffer_ranges;
-    std::vector<MEMORY_RANGE> image_ranges;
+    std::vector<MEMORY_RANGE> bound_ranges;                      // ranges of memory bound to any objects
+    // Convenience maps of handle->bound_ranges index to speed up iterating over images or buffers independently
+    std::unordered_map<uint64_t, uint32_t> image_to_index_map;
+    std::unordered_map<uint64_t, uint32_t> buffer_to_index_map;
 
     MemRange mem_range;
     void *p_data, *p_driver_data;

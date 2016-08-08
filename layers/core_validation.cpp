@@ -5251,7 +5251,7 @@ static bool validateIdleBuffer(const layer_data *my_data, VkBuffer buffer) {
     }
     return skip_call;
 }
-
+// TODO : These are not errors, change to INFO messages
 static bool print_memory_range_error(layer_data *dev_data, const uint64_t object_handle, const uint64_t other_handle,
                                      VkDebugReportObjectTypeEXT object_type) {
     if (object_type == VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT) {
@@ -5264,41 +5264,55 @@ static bool print_memory_range_error(layer_data *dev_data, const uint64_t object
                        other_handle);
     }
 }
+// TODO : Update this function to flag any aliased regions
+// static bool validate_memory_range(layer_data *dev_data, const vector<MEMORY_RANGE> &ranges, const MEMORY_RANGE &new_range,
+//                                  VkDebugReportObjectTypeEXT object_type) {
+//    bool skip_call = false;
+//    // Currently only checking for unintended aliasing
+//    for (auto range : ranges) {
+//        // TODO : Want to also flag aliased ranges here
+//        if ((range.end & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)) <
+//            (new_range.start & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)))
+//            continue;
+//        if ((range.start & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)) >
+//            (new_range.end & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)))
+//            continue;
+//        skip_call |= print_memory_range_error(dev_data, new_range.handle, range.handle, object_type);
+//    }
+//    return skip_call;
+//}
 
-static bool validate_memory_range(layer_data *dev_data, const vector<MEMORY_RANGE> &ranges, const MEMORY_RANGE &new_range,
-                                  VkDebugReportObjectTypeEXT object_type) {
-    bool skip_call = false;
-
-    for (auto range : ranges) {
-        if ((range.end & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)) <
-            (new_range.start & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)))
-            continue;
-        if ((range.start & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)) >
-            (new_range.end & ~(dev_data->phys_dev_properties.properties.limits.bufferImageGranularity - 1)))
-            continue;
-        skip_call |= print_memory_range_error(dev_data, new_range.handle, range.handle, object_type);
-    }
-    return skip_call;
-}
-
-static MEMORY_RANGE insert_memory_ranges(uint64_t handle, VkDeviceMemory mem, VkDeviceSize memoryOffset,
-                                         VkMemoryRequirements memRequirements, vector<MEMORY_RANGE> &ranges) {
+static MEMORY_RANGE InsertMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize memoryOffset,
+                                      VkMemoryRequirements memRequirements,
+                                      std::unordered_map<uint64_t, uint32_t> &handle_index_map) {
     MEMORY_RANGE range;
     range.handle = handle;
-    range.memory = mem;
+    range.memory = mem_info->mem;
     range.start = memoryOffset;
     range.end = memoryOffset + memRequirements.size - 1;
-    ranges.push_back(range);
+    mem_info->bound_ranges.push_back(range);
+    handle_index_map[handle] = mem_info->bound_ranges.size() - 1;
     return range;
 }
 
-static void remove_memory_ranges(uint64_t handle, VkDeviceMemory mem, vector<MEMORY_RANGE> &ranges) {
-    for (uint32_t item = 0; item < ranges.size(); item++) {
-        if ((ranges[item].handle == handle) && (ranges[item].memory == mem)) {
-            ranges.erase(ranges.begin() + item);
-            break;
-        }
-    }
+static MEMORY_RANGE InsertImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
+                                           VkMemoryRequirements mem_reqs) {
+    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, mem_info->image_to_index_map);
+}
+
+static MEMORY_RANGE InsertBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, VkDeviceSize mem_offset,
+                                            VkMemoryRequirements mem_reqs) {
+    return InsertMemoryRange(handle, mem_info, mem_offset, mem_reqs, mem_info->buffer_to_index_map);
+}
+
+static void RemoveBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) {
+    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + mem_info->buffer_to_index_map[handle]);
+    mem_info->buffer_to_index_map.erase(handle);
+}
+
+static void RemoveImageMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) {
+    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + mem_info->image_to_index_map[handle]);
+    mem_info->image_to_index_map.erase(handle);
 }
 
 VKAPI_ATTR void VKAPI_CALL DestroyBuffer(VkDevice device, VkBuffer buffer,
@@ -5314,7 +5328,7 @@ VKAPI_ATTR void VKAPI_CALL DestroyBuffer(VkDevice device, VkBuffer buffer,
                                      {reinterpret_cast<uint64_t &>(buff_node->buffer), VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT});
             auto mem_info = getMemObjInfo(dev_data, buff_node->mem);
             if (mem_info) {
-                remove_memory_ranges(reinterpret_cast<uint64_t &>(buffer), buff_node->mem, mem_info->buffer_ranges);
+                RemoveBufferMemoryRange(reinterpret_cast<uint64_t &>(buffer), mem_info);
             }
             clear_object_binding(dev_data, reinterpret_cast<uint64_t &>(buffer), VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT);
             dev_data->bufferMap.erase(buff_node->buffer);
@@ -5349,7 +5363,7 @@ VKAPI_ATTR void VKAPI_CALL DestroyImage(VkDevice device, VkImage image, const Vk
         // Clean up memory mapping, bindings and range references for image
         auto mem_info = getMemObjInfo(dev_data, img_node->mem);
         if (mem_info) {
-            remove_memory_ranges(reinterpret_cast<uint64_t &>(image), img_node->mem, mem_info->image_ranges);
+            RemoveImageMemoryRange(reinterpret_cast<uint64_t &>(image), mem_info);
             clear_object_binding(dev_data, reinterpret_cast<uint64_t &>(image), VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT);
         }
         // Remove image from imageMap
@@ -5399,9 +5413,8 @@ BindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory mem, VkDeviceS
         // Track and validate bound memory range information
         auto mem_info = getMemObjInfo(dev_data, mem);
         if (mem_info) {
-            const MEMORY_RANGE range =
-                insert_memory_ranges(buffer_handle, mem, memoryOffset, memRequirements, mem_info->buffer_ranges);
-            skip_call |= validate_memory_range(dev_data, mem_info->image_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT);
+            const MEMORY_RANGE range = InsertBufferMemoryRange(buffer_handle, mem_info, memoryOffset, memRequirements);
+            // skip_call |= validate_memory_range(dev_data, mem_info->bound_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_BUFFER_EXT);
             skip_call |= ValidateMemoryTypes(dev_data, mem_info, memRequirements.memoryTypeBits, "BindBufferMemory");
         }
 
@@ -10042,7 +10055,8 @@ static bool ValidateMapImageLayouts(VkDevice device, VkDeviceMemory mem, VkDevic
         // Iterate over all bound image ranges and verify that for any that overlap the
         //  map ranges, the layouts are VK_IMAGE_LAYOUT_PREINITIALIZED or VK_IMAGE_LAYOUT_GENERAL
         // TODO : This can be optimized if we store ranges based on starting address and early exit when we pass our range
-        for (auto range : mem_info->image_ranges) {
+        for (auto image_idx_pair : mem_info->image_to_index_map) {
+            auto range = mem_info->bound_ranges[image_idx_pair.second];
             if (rangesIntersect(&range, offset, size)) {
                 std::vector<VkImageLayout> layouts;
                 if (FindLayouts(dev_data, VkImage(range.handle), layouts)) {
@@ -10225,9 +10239,8 @@ VKAPI_ATTR VkResult VKAPI_CALL BindImageMemory(VkDevice device, VkImage image, V
         // Track and validate bound memory range information
         auto mem_info = getMemObjInfo(dev_data, mem);
         if (mem_info) {
-            const MEMORY_RANGE range =
-                insert_memory_ranges(image_handle, mem, memoryOffset, memRequirements, mem_info->image_ranges);
-            skip_call |= validate_memory_range(dev_data, mem_info->buffer_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT);
+            const MEMORY_RANGE range = InsertImageMemoryRange(image_handle, mem_info, memoryOffset, memRequirements);
+            // skip_call |= validate_memory_range(dev_data, mem_info->bound_ranges, range, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT);
             skip_call |= ValidateMemoryTypes(dev_data, mem_info, memRequirements.memoryTypeBits, "vkBindImageMemory");
         }
 
