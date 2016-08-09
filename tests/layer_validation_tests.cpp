@@ -1939,7 +1939,8 @@ TEST_F(VkLayerTest, InvalidMemoryAliasing) {
     image_create_info.mipLevels = 1;
     image_create_info.arrayLayers = 1;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+    // Image tiling must be optimal to trigger error when aliasing linear buffer
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
     image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image_create_info.queueFamilyIndexCount = 0;
@@ -1960,7 +1961,7 @@ TEST_F(VkLayerTest, InvalidMemoryAliasing) {
     alloc_info.allocationSize = buff_mem_reqs.size + img_mem_reqs.size;
     pass = m_device->phy().set_memory_type(
         buff_mem_reqs.memoryTypeBits | img_mem_reqs.memoryTypeBits, &alloc_info,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (!pass) {
         vkDestroyBuffer(m_device->device(), buffer, NULL);
         vkDestroyImage(m_device->device(), image, NULL);
