@@ -5311,8 +5311,6 @@ static bool InsertMemoryRange(layer_data const *dev_data, uint64_t handle, DEVIC
                               VkMemoryRequirements memRequirements, bool is_image, bool is_linear) {
     bool skip_call = false;
     MEMORY_RANGE range; // range to be inserted and returned
-    std::unordered_map<uint64_t, uint32_t> handle_index_map;
-    handle_index_map = is_image ? mem_info->image_to_index_map : mem_info->buffer_to_index_map;
 
     range.image = is_image;
     range.handle = handle;
@@ -5322,16 +5320,21 @@ static bool InsertMemoryRange(layer_data const *dev_data, uint64_t handle, DEVIC
     range.size = memRequirements.size;
     range.end = memoryOffset + memRequirements.size - 1;
     // Update Memory aliasing prior to inserting new range
-    for (auto check_range : mem_info->bound_ranges) {
+    for (auto &obj_range_pair : mem_info->bound_ranges) {
         bool intersection_error = false;
-        if (rangesIntersect(dev_data, &range, &check_range, intersection_error)) {
+        auto check_range = &obj_range_pair.second;
+        if (rangesIntersect(dev_data, &range, check_range, intersection_error)) {
             skip_call |= intersection_error;
-            range.aliases.insert(&check_range);
-            check_range.aliases.insert(&range);
+            range.aliases.insert(check_range);
+            check_range->aliases.insert(&range);
         }
     }
-    mem_info->bound_ranges.push_back(range);
-    handle_index_map[handle] = mem_info->bound_ranges.size() - 1;
+    mem_info->bound_ranges[handle] = range;
+    if (is_image)
+        mem_info->bound_images.insert(handle);
+    else
+        mem_info->bound_buffers.insert(handle);
+
     return skip_call;
 }
 
@@ -5350,20 +5353,16 @@ static bool InsertBufferMemoryRange(layer_data const *dev_data, uint64_t handle,
 //  This function will also remove the handle-to-index mapping from the appropriate
 //  map and clean up any aliases for range being removed.
 static void RemoveMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info, bool is_image) {
-    std::unordered_map<uint64_t, uint32_t> *handle_to_index_map;
-    if (is_image) {
-        handle_to_index_map = &mem_info->image_to_index_map;
-    } else {
-        handle_to_index_map = &mem_info->buffer_to_index_map;
+    auto erase_range = &mem_info->bound_ranges[handle];
+    for (auto alias_range : erase_range->aliases) {
+        alias_range->aliases.erase(erase_range);
+        erase_range->aliases.erase(alias_range);
     }
-    auto index = (*handle_to_index_map)[handle];
-    auto erase_range = mem_info->bound_ranges[index];
-    for (auto alias_range : erase_range.aliases) {
-        alias_range->aliases.erase(&erase_range);
-        erase_range.aliases.erase(alias_range);
-    }
-    mem_info->bound_ranges.erase(mem_info->bound_ranges.begin() + index);
-    handle_to_index_map->erase(handle);
+    mem_info->bound_ranges.erase(handle);
+    if (is_image)
+        mem_info->bound_images.erase(handle);
+    else
+        mem_info->bound_buffers.erase(handle);
 }
 
 static void RemoveBufferMemoryRange(uint64_t handle, DEVICE_MEM_INFO *mem_info) { RemoveMemoryRange(handle, mem_info, false); }
@@ -10099,11 +10098,11 @@ static bool ValidateMapImageLayouts(VkDevice device, VkDeviceMemory mem, VkDevic
         // Iterate over all bound image ranges and verify that for any that overlap the
         //  map ranges, the layouts are VK_IMAGE_LAYOUT_PREINITIALIZED or VK_IMAGE_LAYOUT_GENERAL
         // TODO : This can be optimized if we store ranges based on starting address and early exit when we pass our range
-        for (auto image_idx_pair : mem_info->image_to_index_map) {
-            auto range = mem_info->bound_ranges[image_idx_pair.second];
-            if (rangesIntersect(dev_data, &range, offset, size)) {
+        for (auto image_handle : mem_info->bound_images) {
+            auto range = &mem_info->bound_ranges[image_handle];
+            if (rangesIntersect(dev_data, range, offset, size)) {
                 std::vector<VkImageLayout> layouts;
-                if (FindLayouts(dev_data, VkImage(range.handle), layouts)) {
+                if (FindLayouts(dev_data, VkImage(image_handle), layouts)) {
                     for (auto layout : layouts) {
                         if (layout != VK_IMAGE_LAYOUT_PREINITIALIZED && layout != VK_IMAGE_LAYOUT_GENERAL) {
                             skip_call |=
