@@ -1973,7 +1973,7 @@ TEST_F(VkLayerTest, InvalidMemoryAliasing) {
     ASSERT_VK_SUCCESS(err);
 
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         " is aliased with buffer 0x");
+                                         " is aliased with linear buffer 0x");
     // VALIDATION FAILURE due to image mapping overlapping buffer mapping
     err = vkBindImageMemory(m_device->device(), image, mem, 0);
     m_errorMonitor->VerifyFound();
@@ -1987,7 +1987,7 @@ TEST_F(VkLayerTest, InvalidMemoryAliasing) {
     err = vkBindImageMemory(m_device->device(), image, mem_img, 0);
     ASSERT_VK_SUCCESS(err);
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         " is aliased with image 0x");
+                                         "is aliased with non-linear image 0x");
     err = vkBindBufferMemory(m_device->device(), buffer2, mem_img, 0);
     m_errorMonitor->VerifyFound();
 
