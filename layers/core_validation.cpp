@@ -4984,7 +4984,7 @@ VKAPI_ATTR VkResult VKAPI_CALL GetFenceStatus(VkDevice device, VkFence fence) {
     if (result == VK_SUCCESS) {
         auto pFence = getFenceNode(dev_data, fence);
         if (pFence->signaler.first != VK_NULL_HANDLE) {
-            skipCall |= RetireWorkOnQueue(dev_data,
+            skip_call |= RetireWorkOnQueue(dev_data,
                                           getQueueNode(dev_data, pFence->signaler.first),
                                           pFence->signaler.second);
         }
