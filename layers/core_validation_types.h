@@ -234,9 +234,11 @@ struct DEVICE_MEM_INFO {
 
     MemRange mem_range;
     void *p_data, *p_driver_data;
+    size_t alignment_offset;
+
     DEVICE_MEM_INFO(void *disp_object, const VkDeviceMemory in_mem, const VkMemoryAllocateInfo *p_alloc_info)
         : object(disp_object), global_valid(false), mem(in_mem), alloc_info(*p_alloc_info), mem_range{}, p_data(0),
-          p_driver_data(0){};
+          p_driver_data(0), alignment_offset(0){};
 };
 
 class SWAPCHAIN_NODE {

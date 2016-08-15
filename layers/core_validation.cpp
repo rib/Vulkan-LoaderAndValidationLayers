@@ -5008,10 +5008,15 @@ static void initializeAndTrackMemory(layer_data *dev_data, VkDeviceMemory mem, V
             if (size == VK_WHOLE_SIZE) {
                 size = mem_info->alloc_info.allocationSize;
             }
-            size_t convSize = (size_t)(size);
-            mem_info->p_data = malloc(2 * convSize);
-            memset(mem_info->p_data, NoncoherentMemoryFillValue, 2 * convSize);
-            *ppData = static_cast<char *>(mem_info->p_data) + (convSize / 2);
+            size_t map_size = (size_t)(size);
+
+            // Ensure start of mapped region reflects hardware alignment constraints
+            size_t map_alignment = dev_data->phys_dev_properties.properties.limits.minMemoryMapAlignment;
+            mem_info->p_data = malloc(2 * map_size + map_alignment);
+            mem_info->alignment_offset = reinterpret_cast<uintptr_t>(mem_info->p_data) % map_alignment;
+
+            memset(static_cast<char *>(mem_info->p_data) + mem_info->alignment_offset, NoncoherentMemoryFillValue, 2 * map_size);
+            *ppData = static_cast<char *>(mem_info->p_data) + mem_info->alignment_offset + (map_size / 2);
         }
     }
 }
@@ -10315,7 +10320,7 @@ static bool validateAndCopyNoncoherentMemoryToDriver(layer_data *my_data, uint32
             if (mem_info->p_data) {
                 VkDeviceSize size = mem_info->mem_range.size;
                 VkDeviceSize half_size = (size / 2);
-                char *data = static_cast<char *>(mem_info->p_data);
+                char *data = static_cast<char *>(mem_info->p_data) + mem_info->alignment_offset;
                 for (auto j = 0; j < half_size; ++j) {
                     if (data[j] != NoncoherentMemoryFillValue) {
                         skip_call |= log_msg(
