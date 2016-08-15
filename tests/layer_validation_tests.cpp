@@ -2409,7 +2409,7 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
     // before successfully creating a surface:
     // First, try to create a surface without a VkXcbSurfaceCreateInfoKHR:
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with NULL pointer");
+                                         "required parameter pCreateInfo specified as NULL");
     err = vkCreateXcbSurfaceKHR(instance(), NULL, NULL, &surface);
     pass = (err != VK_SUCCESS);
     ASSERT_TRUE(pass);
@@ -2420,7 +2420,7 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
     VkXcbSurfaceCreateInfoKHR xcb_create_info = {};
     xcb_create_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with the wrong value for");
+                                         "parameter pCreateInfo->sType must be");
     err = vkCreateXcbSurfaceKHR(instance(), &xcb_create_info, NULL, &surface);
     pass = (err != VK_SUCCESS);
     ASSERT_TRUE(pass);
@@ -2551,7 +2551,8 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
 
     // First, try without a pointer to surface_format_count:
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with NULL pointer");
+                                         "required parameter pSurfaceFormatCount "
+                                         "specified as NULL");
     vkGetPhysicalDeviceSurfaceFormatsKHR(gpu(), surface, NULL, NULL);
     pass = (err == VK_SUCCESS);
     ASSERT_TRUE(pass);
@@ -2605,7 +2606,9 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
 
     // First, try without a pointer to surface_format_count:
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with NULL pointer");
+                                         "required parameter pPresentModeCount "
+                                         "specified as NULL");
+
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu(), surface, NULL, NULL);
     pass = (err == VK_SUCCESS);
     ASSERT_TRUE(pass);
@@ -2658,7 +2661,9 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
 
     // First, try without a pointer to swapchain_create_info:
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with NULL pointer");
+                                         "required parameter pCreateInfo "
+                                         "specified as NULL");
+
     err = vkCreateSwapchainKHR(m_device->device(), NULL, NULL, &swapchain);
     pass = (err != VK_SUCCESS);
     ASSERT_TRUE(pass);
@@ -2668,7 +2673,8 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
     // sType:
     swapchain_create_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with the wrong value for");
+                                         "parameter pCreateInfo->sType must be");
+
     err = vkCreateSwapchainKHR(m_device->device(), &swapchain_create_info, NULL,
                                &swapchain);
     pass = (err != VK_SUCCESS);
@@ -2680,7 +2686,9 @@ TEST_F(VkWsiEnabledLayerTest, TestEnabledWsi) {
     swapchain_create_info.pNext = NULL;
     swapchain_create_info.flags = 0;
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         "called with NULL pointer");
+                                         "required parameter pSwapchain "
+                                         "specified as NULL");
+
     err = vkCreateSwapchainKHR(m_device->device(), &swapchain_create_info, NULL,
                                NULL);
     pass = (err != VK_SUCCESS);
