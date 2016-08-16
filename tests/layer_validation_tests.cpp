@@ -2169,6 +2169,7 @@ TEST_F(VkLayerTest, InvalidMemoryMapping) {
         ") is less than Memory Object's offset (");
     vkFlushMappedMemoryRanges(m_device->device(), 1, &mmr);
     m_errorMonitor->VerifyFound();
+
     // Now flush range that oversteps mapped range
     vkUnmapMemory(m_device->device(), mem);
     err = vkMapMemory(m_device->device(), mem, 0, 256, 0, (void **)&pData);
@@ -2180,6 +2181,21 @@ TEST_F(VkLayerTest, InvalidMemoryMapping) {
         ") exceeds the Memory Object's upper-bound (");
     vkFlushMappedMemoryRanges(m_device->device(), 1, &mmr);
     m_errorMonitor->VerifyFound();
+
+    // Map using WHOLE_SIZE, then Flush and Invalidate using same.
+    // Note that this is a no-op on systems without non-coherent memory
+    vkUnmapMemory(m_device->device(), mem);
+    m_errorMonitor->ExpectSuccess();
+    err = vkMapMemory(m_device->device(), mem, 16, VK_WHOLE_SIZE, 0,
+                      (void **)&pData);
+    ASSERT_VK_SUCCESS(err);
+    mmr.offset = 16;
+    mmr.size = VK_WHOLE_SIZE;
+    err = vkFlushMappedMemoryRanges(m_device->device(), 1, &mmr);
+    ASSERT_VK_SUCCESS(err);
+    err = vkInvalidateMappedMemoryRanges(m_device->device(), 1, &mmr);
+    ASSERT_VK_SUCCESS(err);
+    m_errorMonitor->VerifyNotFound();
 
     pass =
         m_device->phy().set_memory_type(mem_reqs.memoryTypeBits, &alloc_info,
