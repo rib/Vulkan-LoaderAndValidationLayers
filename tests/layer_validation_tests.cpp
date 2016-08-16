@@ -9973,9 +9973,9 @@ TEST_F(VkLayerTest, RenderPassClearOpMismatch) {
     rp_begin.clearValueCount = 0; // Should be 1
 
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
-                                         " has a clearValueCount of 0 but "
-                                         "there must be at least 1 entries in "
-                                         "pClearValues array to account for ");
+                                         " has a clearValueCount of 0 but must "
+                                         "be at least 1. Note that the "
+                                         "pClearValues array is indexed by ");
 
     vkCmdBeginRenderPass(m_commandBuffer->GetBufferHandle(), &rp_begin,
                          VK_SUBPASS_CONTENTS_INLINE);
