@@ -7741,7 +7741,8 @@ TEST_F(VkLayerTest, InvalidCmdBufferPipelineDestroyed) {
 TEST_F(VkLayerTest, InvalidCmdBufferDescriptorSetBufferDestroyed) {
     TEST_DESCRIPTION("Attempt to draw with a command buffer that is invalid "
                      "due to a bound descriptor set with a buffer dependency "
-                     "being destroyed.");
+                     "being destroyed. Attempt to destroy a DescriptorSet"
+                     "that is in use");
     ASSERT_NO_FATAL_FAILURE(InitState());
     ASSERT_NO_FATAL_FAILURE(InitViewport());
     ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
@@ -8161,7 +8162,11 @@ TEST_F(VkLayerTest, InvalidCmdBufferDescriptorSetImageSamplerDestroyed) {
     Draw(1, 0, 0, 0);
     EndCommandBuffer();
     // Destroy descriptor set invalidates the cb, causing error on submit
+    m_errorMonitor->SetDesiredFailureMsg(
+        VK_DEBUG_REPORT_ERROR_BIT_EXT,
+        "Cannot call vkFreeDescriptorSets() on descriptor set 0x");
     vkFreeDescriptorSets(m_device->device(), ds_pool, 1, &descriptorSet);
+    m_errorMonitor->VerifyFound();
     // Attempt to submit cmd buffer
     submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -13484,6 +13489,198 @@ TEST_F(VkLayerTest, ValidRenderPassAttachmentLayoutWithLoadOp) {
     m_errorMonitor->VerifyNotFound();
 
     vkDestroyRenderPass(m_device->device(), rp, NULL);
+}
+
+TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
+    TEST_DESCRIPTION("Use vkCmdExecuteCommands with invalid state"
+                     "in primary and secondary command buffers."
+                     "Delete objects that are inuse");
+
+    ASSERT_NO_FATAL_FAILURE(InitState());
+    ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
+
+    const char *simultaneous_use_message1 =
+            "does not have VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT set and "
+            "will cause primary command buffer";
+    const char *simultaneous_use_message2 =
+            "w/o VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT set!";
+    const char *cannot_delete_event_message =
+            "Cannot delete event 0x";
+    const char *cannot_delete_semaphore_message =
+            "Cannot delete semaphore 0x";
+    const char *cannot_destroy_fence_message =
+            "Fence 0x";
+
+    VkCommandBufferAllocateInfo command_buffer_allocate_info = {};
+    command_buffer_allocate_info.sType =
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    command_buffer_allocate_info.commandPool = m_commandPool;
+    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    command_buffer_allocate_info.commandBufferCount = 1;
+
+    VkCommandBuffer secondary_command_buffer;
+    ASSERT_VK_SUCCESS(vkAllocateCommandBuffers(m_device->device(),
+                                               &command_buffer_allocate_info,
+                                               &secondary_command_buffer));
+    VkCommandBufferBeginInfo command_buffer_begin_info = {};
+    VkCommandBufferInheritanceInfo command_buffer_inheritance_info = {};
+    command_buffer_inheritance_info.sType =
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    command_buffer_inheritance_info.renderPass = m_renderPass;
+    command_buffer_inheritance_info.framebuffer = m_framebuffer;
+    command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                 VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    command_buffer_begin_info.pInheritanceInfo = &command_buffer_inheritance_info;
+
+    vkBeginCommandBuffer(secondary_command_buffer, &command_buffer_begin_info);
+    vkEndCommandBuffer(secondary_command_buffer);
+
+    command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    vkBeginCommandBuffer(m_commandBuffer->handle(), &command_buffer_begin_info);
+
+    VkEvent event;
+    VkEventCreateInfo event_create_info = {};
+    event_create_info.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
+    vkCreateEvent(m_device->device(), &event_create_info, nullptr, &event);
+    vkCmdSetEvent(m_commandBuffer->handle(), event,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+
+    VkSemaphoreCreateInfo semaphore_create_info = {};
+    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkSemaphore semaphore;
+    ASSERT_VK_SUCCESS(vkCreateSemaphore(m_device->device(), &semaphore_create_info,
+                            nullptr, &semaphore));
+    VkFenceCreateInfo fence_create_info = {};
+    fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence;
+    ASSERT_VK_SUCCESS(vkCreateFence(m_device->device(), &fence_create_info,
+                                    nullptr, &fence));
+
+    VkDescriptorPoolSize descriptor_pool_type_count = {};
+    descriptor_pool_type_count.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    descriptor_pool_type_count.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo descriptor_pool_create_info = {};
+    descriptor_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptor_pool_create_info.maxSets = 1;
+    descriptor_pool_create_info.poolSizeCount = 1;
+    descriptor_pool_create_info.pPoolSizes = &descriptor_pool_type_count;
+    descriptor_pool_create_info.flags =
+            VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+
+    VkDescriptorPool descriptorset_pool;
+    ASSERT_VK_SUCCESS(vkCreateDescriptorPool(m_device->device(),
+                                             &descriptor_pool_create_info,
+                                             nullptr, &descriptorset_pool));
+
+    VkDescriptorSetLayoutBinding descriptorset_layout_binding = {};
+    descriptorset_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    descriptorset_layout_binding.descriptorCount = 1;
+    descriptorset_layout_binding.stageFlags = VK_SHADER_STAGE_ALL;
+
+    VkDescriptorSetLayoutCreateInfo descriptorset_layout_create_info = {};
+    descriptorset_layout_create_info.sType =
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptorset_layout_create_info.bindingCount = 1;
+    descriptorset_layout_create_info.pBindings = &descriptorset_layout_binding;
+
+    VkDescriptorSetLayout descriptorset_layout;
+    ASSERT_VK_SUCCESS(vkCreateDescriptorSetLayout(m_device->device(),
+                                                  &descriptorset_layout_create_info,
+                                                  nullptr,
+                                                  &descriptorset_layout));
+
+    VkDescriptorSet descriptorset;
+    VkDescriptorSetAllocateInfo descriptorset_allocate_info = {};
+    descriptorset_allocate_info.sType =
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptorset_allocate_info.descriptorSetCount = 1;
+    descriptorset_allocate_info.descriptorPool = descriptorset_pool;
+    descriptorset_allocate_info.pSetLayouts = &descriptorset_layout;
+    ASSERT_VK_SUCCESS(vkAllocateDescriptorSets(m_device->device(),
+                                               &descriptorset_allocate_info,
+                                               &descriptorset));
+
+    VkShaderObj vs(m_device, bindStateVertShaderText, VK_SHADER_STAGE_VERTEX_BIT,
+                   this);
+    VkShaderObj fs(m_device, bindStateFragShaderText, VK_SHADER_STAGE_FRAGMENT_BIT,
+                   this);
+
+    VkPipelineObj pipe(m_device);
+    pipe.AddColorAttachment();
+    pipe.AddShader(&vs);
+    pipe.AddShader(&fs);
+
+    VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
+    pipeline_layout_create_info.sType =
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_create_info.setLayoutCount = 1;
+    pipeline_layout_create_info.pSetLayouts = &descriptorset_layout;
+
+    VkPipelineLayout pipeline_layout;
+    ASSERT_VK_SUCCESS(vkCreatePipelineLayout(m_device->device(),
+                                             &pipeline_layout_create_info,
+                                             nullptr, &pipeline_layout));
+
+    pipe.CreateVKPipeline(pipeline_layout, m_renderPass);
+
+    vkCmdBindPipeline(m_commandBuffer->GetBufferHandle(),
+                      VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
+    vkCmdBindDescriptorSets(m_commandBuffer->GetBufferHandle(),
+                            VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0,
+                            1, &descriptorset, 0, NULL);
+
+    vkEndCommandBuffer(m_commandBuffer->handle());
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers =&m_commandBuffer->handle();
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &semaphore;
+    vkQueueSubmit(m_device->m_queue, 1, &submit_info, fence);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         cannot_delete_event_message);
+    vkDestroyEvent(m_device->device(), event, nullptr);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         cannot_delete_semaphore_message);
+    vkDestroySemaphore(m_device->device(), semaphore, nullptr);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         cannot_destroy_fence_message);
+    vkDestroyFence(m_device->device(), fence, nullptr);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_WARNING_BIT_EXT,
+                                         simultaneous_use_message1);
+    vkCmdExecuteCommands(m_commandBuffer->handle(), 1,
+                         &secondary_command_buffer);
+    m_errorMonitor->VerifyFound();
+
+    vkResetCommandBuffer(m_commandBuffer->handle(), 0);
+
+    submit_info.pCommandBuffers = &secondary_command_buffer;
+    vkQueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+
+    vkBeginCommandBuffer(m_commandBuffer->handle(), &command_buffer_begin_info);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         simultaneous_use_message2);
+    vkCmdExecuteCommands(m_commandBuffer->handle(), 1,
+                         &secondary_command_buffer);
+    m_errorMonitor->VerifyFound();
+    vkEndCommandBuffer(m_commandBuffer->handle());
+
+    vkDestroySemaphore(m_device->device(), semaphore, nullptr);
+    vkDestroyFence(m_device->device(), fence, nullptr);
+    vkDestroyEvent(m_device->device(), event, nullptr);
+    vkDestroyDescriptorPool(m_device->device(), descriptorset_pool, nullptr);
+    vkDestroyDescriptorSetLayout(m_device->device(), descriptorset_layout,
+                                 nullptr);
+    vkDestroyPipelineLayout(m_device->device(), pipeline_layout, nullptr);
 }
 
 TEST_F(VkLayerTest, FramebufferIncompatible) {
