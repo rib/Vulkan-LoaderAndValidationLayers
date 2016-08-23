@@ -7967,6 +7967,209 @@ TEST_F(VkLayerTest, InvalidDynamicOffsetCases) {
     vkDestroyDescriptorPool(m_device->device(), ds_pool, NULL);
 }
 
+TEST_F(VkLayerTest, DynamicOffsetMeatGrinder) {
+    TEST_DESCRIPTION("Create a large buffer partitioned into separate dynamic "
+                     "uniform buffers of increasing sizes and then bind an "
+                     "update that sets increasing (but valid) offsets into "
+                     "each of those dynamic uniform buffers.");
+    VkResult err;
+    m_errorMonitor->ExpectSuccess();
+
+    ASSERT_NO_FATAL_FAILURE(InitState());
+    ASSERT_NO_FATAL_FAILURE(InitViewport());
+    ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
+
+    VkDescriptorPoolSize ds_type_count = {};
+    ds_type_count.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    ds_type_count.descriptorCount = 10;
+
+    VkDescriptorPoolCreateInfo ds_pool_ci = {};
+    ds_pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    ds_pool_ci.pNext = NULL;
+    ds_pool_ci.maxSets = 1;
+    ds_pool_ci.poolSizeCount = 1;
+    ds_pool_ci.pPoolSizes = &ds_type_count;
+
+    VkDescriptorPool ds_pool;
+    err =
+        vkCreateDescriptorPool(m_device->device(), &ds_pool_ci, NULL, &ds_pool);
+    ASSERT_VK_SUCCESS(err);
+
+    static const uint32_t NUM_DESCRIPTORS = 10;
+    VkDescriptorSetLayoutBinding dsl_binding[NUM_DESCRIPTORS] = {};
+    // Set binding numbers to decrease to verify that binding #s are validated
+    // in-order
+    for (uint32_t i = 0; i < NUM_DESCRIPTORS; ++i) {
+        dsl_binding[i].binding = NUM_DESCRIPTORS - (i + 1);
+        dsl_binding[i].descriptorType =
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        dsl_binding[i].descriptorCount = 1;
+        dsl_binding[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        dsl_binding[i].pImmutableSamplers = NULL;
+    }
+
+    VkDescriptorSetLayoutCreateInfo ds_layout_ci = {};
+    ds_layout_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    ds_layout_ci.pNext = NULL;
+    ds_layout_ci.bindingCount = NUM_DESCRIPTORS;
+    ds_layout_ci.pBindings = dsl_binding;
+    VkDescriptorSetLayout ds_layout;
+    err = vkCreateDescriptorSetLayout(m_device->device(), &ds_layout_ci, NULL,
+                                      &ds_layout);
+    ASSERT_VK_SUCCESS(err);
+
+    VkDescriptorSet descriptorSet;
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.descriptorPool = ds_pool;
+    alloc_info.pSetLayouts = &ds_layout;
+    err = vkAllocateDescriptorSets(m_device->device(), &alloc_info,
+                                   &descriptorSet);
+    ASSERT_VK_SUCCESS(err);
+
+    VkPipelineLayoutCreateInfo pipeline_layout_ci = {};
+    pipeline_layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_ci.pNext = NULL;
+    pipeline_layout_ci.setLayoutCount = 1;
+    pipeline_layout_ci.pSetLayouts = &ds_layout;
+
+    VkPipelineLayout pipeline_layout;
+    err = vkCreatePipelineLayout(m_device->device(), &pipeline_layout_ci, NULL,
+                                 &pipeline_layout);
+    ASSERT_VK_SUCCESS(err);
+
+    // Create a buffer to update the descriptor with
+    // Minimum size of a single buffer
+    VkDeviceSize min_size =
+        m_device->props.limits.minUniformBufferOffsetAlignment;
+    // Minimum size of whole buffer needs to accommodate all separate buffers
+    auto min_total_size = (min_size + (min_size * NUM_DESCRIPTORS)) *
+                          ((NUM_DESCRIPTORS + 1) >> 1);
+    uint32_t qfi = 0;
+    VkBufferCreateInfo buff_ci = {};
+    buff_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buff_ci.size = min_total_size;
+    buff_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buff_ci.queueFamilyIndexCount = 1;
+    buff_ci.pQueueFamilyIndices = &qfi;
+
+    VkBuffer dyub;
+    err = vkCreateBuffer(m_device->device(), &buff_ci, NULL, &dyub);
+    ASSERT_VK_SUCCESS(err);
+    // Allocate memory and bind to buffer so we can make it to the appropriate
+    // error
+    VkMemoryAllocateInfo mem_alloc = {};
+    mem_alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mem_alloc.pNext = NULL;
+    mem_alloc.allocationSize = min_total_size;
+    mem_alloc.memoryTypeIndex = 0;
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(m_device->device(), dyub, &memReqs);
+    bool pass =
+        m_device->phy().set_memory_type(memReqs.memoryTypeBits, &mem_alloc, 0);
+    if (!pass) {
+        vkDestroyBuffer(m_device->device(), dyub, NULL);
+        return;
+    }
+
+    VkDeviceMemory mem;
+    err = vkAllocateMemory(m_device->device(), &mem_alloc, NULL, &mem);
+    ASSERT_VK_SUCCESS(err);
+    err = vkBindBufferMemory(m_device->device(), dyub, mem, 0);
+    ASSERT_VK_SUCCESS(err);
+    // Correctly update descriptor to avoid "NOT_UPDATED" error
+    VkDescriptorBufferInfo buff_info[NUM_DESCRIPTORS] = {};
+    // Size will increase by factor of two for each binding
+    VkDeviceSize offset = 0;
+    VkDeviceSize size = min_size;
+    uint32_t dyn_offsets[NUM_DESCRIPTORS] = {};
+    for (uint32_t i = 0; i < NUM_DESCRIPTORS; ++i) {
+        buff_info[i].buffer = dyub;
+        buff_info[i].offset = offset;
+        buff_info[i].range = size;
+        // Dyn offset for each binding will be halfway into binding
+        dyn_offsets[NUM_DESCRIPTORS - (i + 1)] = size >> 1;
+        offset = size;
+        size = min_size * (i + 1);
+    }
+    VkWriteDescriptorSet descriptor_write[NUM_DESCRIPTORS] = {};
+    for (uint32_t i = 0; i < NUM_DESCRIPTORS; ++i) {
+        descriptor_write[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptor_write[i].dstSet = descriptorSet;
+        descriptor_write[i].dstBinding = NUM_DESCRIPTORS - (i + 1);
+        descriptor_write[i].descriptorCount = 1;
+        descriptor_write[i].descriptorType =
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        descriptor_write[i].pBufferInfo = &buff_info[i];
+    }
+
+    vkUpdateDescriptorSets(m_device->device(), NUM_DESCRIPTORS,
+                           descriptor_write, 0, NULL);
+
+    BeginCommandBuffer();
+    vkCmdBindDescriptorSets(m_commandBuffer->GetBufferHandle(),
+                            VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0,
+                            1, &descriptorSet, NUM_DESCRIPTORS, dyn_offsets);
+    // Create PSO to be used for draw-time errors below
+    char const *vsSource = "#version 450\n"
+                           "\n"
+                           "out gl_PerVertex { \n"
+                           "    vec4 gl_Position;\n"
+                           "};\n"
+                           "void main(){\n"
+                           "   gl_Position = vec4(1);\n"
+                           "}\n";
+    char const *fsSource =
+        "#version 450\n"
+        "\n"
+        "layout(location=0) out vec4 x;\n"
+        "layout(set=0) layout(binding=0) uniform f0 { int x; int y; } b0;\n"
+        "layout(set=0) layout(binding=1) uniform f1 { int x; int y; } b1;\n"
+        "layout(set=0) layout(binding=2) uniform f2 { int x; int y; } b2;\n"
+        "layout(set=0) layout(binding=3) uniform f3 { int x; int y; } b3;\n"
+        "layout(set=0) layout(binding=4) uniform f4 { int x; int y; } b4;\n"
+        "layout(set=0) layout(binding=5) uniform f5 { int x; int y; } b5;\n"
+        "layout(set=0) layout(binding=6) uniform f6 { int x; int y; } b6;\n"
+        "layout(set=0) layout(binding=7) uniform f7 { int x; int y; } b7;\n"
+        "layout(set=0) layout(binding=8) uniform f8 { int x; int y; } b8;\n"
+        "layout(set=0) layout(binding=9) uniform f9 { int x; int y; } b9;\n"
+        "void main(){\n"
+        "   x = vec4(b0.y);\n"
+        "   x += vec4(b1.y);\n"
+        "   x += vec4(b2.y);\n"
+        "   x += vec4(b3.y);\n"
+        "   x += vec4(b4.y);\n"
+        "   x += vec4(b5.y);\n"
+        "   x += vec4(b6.y);\n"
+        "   x += vec4(b7.y);\n"
+        "   x += vec4(b8.y);\n"
+        "   x += vec4(b9.y);\n"
+        "}\n";
+    VkShaderObj vs(m_device, vsSource, VK_SHADER_STAGE_VERTEX_BIT, this);
+    VkShaderObj fs(m_device, fsSource, VK_SHADER_STAGE_FRAGMENT_BIT, this);
+    VkPipelineObj pipe(m_device);
+    pipe.AddShader(&vs);
+    pipe.AddShader(&fs);
+    pipe.AddColorAttachment();
+    pipe.SetViewport(m_viewports);
+    pipe.SetScissor(m_scissors);
+    pipe.CreateVKPipeline(pipeline_layout, renderPass());
+
+    vkCmdBindPipeline(m_commandBuffer->GetBufferHandle(),
+                      VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
+    Draw(1, 0, 0, 0);
+    m_errorMonitor->VerifyNotFound();
+
+    vkDestroyBuffer(m_device->device(), dyub, NULL);
+    vkFreeMemory(m_device->device(), mem, NULL);
+
+    vkDestroyPipelineLayout(m_device->device(), pipeline_layout, NULL);
+    vkDestroyDescriptorSetLayout(m_device->device(), ds_layout, NULL);
+    vkDestroyDescriptorPool(m_device->device(), ds_pool, NULL);
+}
+
 TEST_F(VkLayerTest, DescriptorBufferUpdateNoMemoryBound) {
     TEST_DESCRIPTION("Attempt to update a descriptor with a non-sparse buffer "
                      "that doesn't have memory bound");
