@@ -13494,11 +13494,14 @@ TEST_F(VkLayerTest, ValidRenderPassAttachmentLayoutWithLoadOp) {
 TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
     TEST_DESCRIPTION("Use vkCmdExecuteCommands with invalid state"
                      "in primary and secondary command buffers."
-                     "Delete objects that are inuse");
+                     "Delete objects that are inuse. Call VkQueueSubmit"
+                     "with an event that has been deleted.");
 
     ASSERT_NO_FATAL_FAILURE(InitState());
     ASSERT_NO_FATAL_FAILURE(InitRenderTarget());
 
+    const char *submit_with_deleted_event_message =
+            "Cannot submit cmd buffer using deleted event 0x";
     const char *simultaneous_use_message1 =
             "does not have VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT set and "
             "will cause primary command buffer";
@@ -13545,6 +13548,22 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
     vkCreateEvent(m_device->device(), &event_create_info, nullptr, &event);
     vkCmdSetEvent(m_commandBuffer->handle(), event,
                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+
+    vkEndCommandBuffer(m_commandBuffer->handle());
+    vkDestroyEvent(m_device->device(), event, nullptr);
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers =&m_commandBuffer->handle();
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         submit_with_deleted_event_message);
+    vkQueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    m_errorMonitor->VerifyFound();
+
+    vkResetCommandBuffer(m_commandBuffer->handle(), 0);
+
+    vkCreateEvent(m_device->device(), &event_create_info, nullptr, &event);
 
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -13625,6 +13644,10 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     pipe.CreateVKPipeline(pipeline_layout, m_renderPass);
 
+    vkBeginCommandBuffer(m_commandBuffer->handle(), &command_buffer_begin_info);
+    vkCmdSetEvent(m_commandBuffer->handle(), event,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+
     vkCmdBindPipeline(m_commandBuffer->GetBufferHandle(),
                       VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.handle());
     vkCmdBindDescriptorSets(m_commandBuffer->GetBufferHandle(),
@@ -13633,13 +13656,10 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     vkEndCommandBuffer(m_commandBuffer->handle());
 
-    VkSubmitInfo submit_info = {};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers =&m_commandBuffer->handle();
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &semaphore;
     vkQueueSubmit(m_device->m_queue, 1, &submit_info, fence);
+
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
                                          cannot_delete_event_message);
     vkDestroyEvent(m_device->device(), event, nullptr);
