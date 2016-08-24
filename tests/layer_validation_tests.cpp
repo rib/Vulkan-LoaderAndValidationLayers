@@ -13502,6 +13502,8 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     const char *submit_with_deleted_event_message =
             "Cannot submit cmd buffer using deleted event 0x";
+    const char *queue_forward_progress_message =
+            " that has already been signaled but not waited on by queue 0x";
     const char *simultaneous_use_message1 =
             "does not have VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT set and "
             "will cause primary command buffer";
@@ -13552,12 +13554,24 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
     vkEndCommandBuffer(m_commandBuffer->handle());
     vkDestroyEvent(m_device->device(), event, nullptr);
 
+    VkSemaphoreCreateInfo semaphore_create_info = {};
+    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkSemaphore semaphore;
+    ASSERT_VK_SUCCESS(vkCreateSemaphore(m_device->device(), &semaphore_create_info,
+                            nullptr, &semaphore));
     VkSubmitInfo submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers =&m_commandBuffer->handle();
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &semaphore;
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
                                          submit_with_deleted_event_message);
+    vkQueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    m_errorMonitor->VerifyFound();
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                         queue_forward_progress_message);
     vkQueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
     m_errorMonitor->VerifyFound();
 
@@ -13565,11 +13579,6 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     vkCreateEvent(m_device->device(), &event_create_info, nullptr, &event);
 
-    VkSemaphoreCreateInfo semaphore_create_info = {};
-    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VkSemaphore semaphore;
-    ASSERT_VK_SUCCESS(vkCreateSemaphore(m_device->device(), &semaphore_create_info,
-                            nullptr, &semaphore));
     VkFenceCreateInfo fence_create_info = {};
     fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence;
@@ -13656,8 +13665,6 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     vkEndCommandBuffer(m_commandBuffer->handle());
 
-    submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = &semaphore;
     vkQueueSubmit(m_device->m_queue, 1, &submit_info, fence);
 
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
