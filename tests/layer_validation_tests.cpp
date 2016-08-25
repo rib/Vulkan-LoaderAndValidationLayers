@@ -13502,6 +13502,9 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
 
     const char *submit_with_deleted_event_message =
             "Cannot submit cmd buffer using deleted event 0x";
+    const char *invalid_fence_wait_message =
+            " which has not been submitted on a Queue or during "
+            "acquire next image.";
     const char *queue_forward_progress_message =
             " that has already been signaled but not waited on by queue 0x";
     const char *simultaneous_use_message1 =
@@ -13584,6 +13587,11 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
     VkFence fence;
     ASSERT_VK_SUCCESS(vkCreateFence(m_device->device(), &fence_create_info,
                                     nullptr, &fence));
+
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_WARNING_BIT_EXT,
+                                         invalid_fence_wait_message);
+    vkWaitForFences(m_device->device(), 1, &fence, VK_TRUE, UINT64_MAX);
+    m_errorMonitor->VerifyFound();
 
     VkDescriptorPoolSize descriptor_pool_type_count = {};
     descriptor_pool_type_count.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -13691,7 +13699,7 @@ TEST_F(VkLayerTest, SimultaneousUseInUseDestroyedSignaled) {
     vkResetCommandBuffer(m_commandBuffer->handle(), 0);
 
     submit_info.pCommandBuffers = &secondary_command_buffer;
-    vkQueueSubmit(m_device->m_queue, 1, &submit_info, VK_NULL_HANDLE);
+    vkQueueSubmit(m_device->m_queue, 1, &submit_info, fence);
 
     vkBeginCommandBuffer(m_commandBuffer->handle(), &command_buffer_begin_info);
     m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT,
