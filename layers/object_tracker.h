@@ -92,6 +92,7 @@ struct layer_data {
     debug_report_data *report_data;
     std::vector<VkDebugReportCallbackEXT> logging_callback;
     bool wsi_enabled;
+    bool wsi_display_swapchain_enabled;
     bool objtrack_extensions_enabled;
 
     // The following are for keeping track of the temporary callbacks that can
