@@ -3821,9 +3821,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         OutputGenerator.__init__(self, errFile, warnFile, diagFile)
         self.INDENT_SPACES = 4
         # Commands to ignore
-        #LUGMAL
-        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
-        logging.debug('XXXXXXXXXXXXXXXX:::   A debug message!')
+        self.intercepts = []
         self.blacklist = [
             'vkGetSwapchainImagesKHR',
             'vkCreateSwapchainKHR',
@@ -3871,6 +3869,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             return indent[:-self.INDENT_SPACES]
         return ''
     #
+    # Check if the parameter passed in is a pointer to an array
+    def paramIsArray(self, param):
+        return param.attrib.get('len') is not None
+    #
     def beginFile(self, genOpts):
         OutputGenerator.beginFile(self, genOpts)
         # C-specific
@@ -3887,17 +3889,24 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         # Namespace
         self.newline()
         write('namespace unique_objects {', file = self.outFile)
+
     def endFile(self):
         # C-specific
+        # Finish C++ namespace and multiple inclusion protection
         self.newline()
-        # Namespace
-        write('} // namespace unique_objects', file = self.outFile)
-        # Finish C++ wrapper and multiple inclusion protection
+        # record intercepted procedures
+        write('// intercepts', file=self.outFile)
+        write('struct { const char* name; PFN_vkVoidFunction pFunc;} procmap[] = {', file=self.outFile)
+        write('\n'.join(self.intercepts), file=self.outFile)
+        write('};\n', file=self.outFile)
+        self.newline()
+        write('} // namespace unique_objects', file=self.outFile)
         if (self.genOpts.protectFile and self.genOpts.filename):
             self.newline()
             write('#endif', file=self.outFile)
         # Finish processing in superclass
         OutputGenerator.endFile(self)
+
     def beginFeature(self, interface, emit):
         # Start processing in superclass
         OutputGenerator.beginFeature(self, interface, emit)
@@ -3952,26 +3961,208 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
     def appendSection(self, section, text):
         # self.sections[section].append('SECTION: ' + section + '\n')
         self.sections[section].append(text)
+
+    # Check if the parameter passed in is a pointer
+    def paramIsPointer(self, param):
+        ispointer = False
+        for elem in param:
+            #write('paramIsPointer '+elem.text, file=sys.stderr)
+            #write('elem.tag '+elem.tag, file=sys.stderr)
+            #if (elem.tail is None):
+            #    write('elem.tail is None', file=sys.stderr)
+            #else:
+            #    write('elem.tail '+elem.tail, file=sys.stderr)
+            if ((elem.tag is not 'type') and (elem.tail is not None)) and '*' in elem.tail:
+                ispointer = True
+            #    write('is pointer', file=sys.stderr)
+        return ispointer
+
+    def makeObjectsWrapBlock(self, cmd, functionprefix):
+        """Generate C function pointer typedef for <command> Element"""
+        paramdecl = ''
+        thread_check_dispatchable_objects = [
+            "VkCommandBuffer",
+            "VkDevice",
+            "VkInstance",
+            "VkQueue",
+        ]
+        thread_check_nondispatchable_objects = [
+            "VkBuffer",
+            "VkBufferView",
+            "VkCommandPool",
+            "VkDescriptorPool",
+            "VkDescriptorSetLayout",
+            "VkDeviceMemory",
+            "VkEvent",
+            "VkFence",
+            "VkFramebuffer",
+            "VkImage",
+            "VkImageView",
+            "VkPipeline",
+            "VkPipelineCache",
+            "VkPipelineLayout",
+            "VkQueryPool",
+            "VkRenderPass",
+            "VkSampler",
+            "VkSemaphore",
+            "VkShaderModule",
+        ]
+
+        # Find and add any parameters that contain NDOs
+        params = cmd.findall('param')
+        for param in params:
+            paramname = param.find('name')
+            if False: # self.paramIsPointer(param):
+                paramdecl += '    // not watching use of pointer ' + paramname.text + '\n'
+            else:
+                externsync = param.attrib.get('externsync')
+                if externsync == 'true':
+                    if self.paramIsArray(param):
+                        paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+                        paramdecl += '        ' + functionprefix + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
+                        paramdecl += '    }\n'
+                    else:
+                        paramdecl += '    ' + functionprefix + 'WriteObject(my_data, ' + paramname.text + ');\n'
+                elif (param.attrib.get('externsync')):
+                    if self.paramIsArray(param):
+                        # Externsync can list pointers to arrays of members to synchronize
+                        paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+                        for member in externsync.split(","):
+                            # Replace first empty [] in member name with index
+                            element = member.replace('[]','[index]',1)
+                            if '[]' in element:
+                                # Replace any second empty [] in element name with
+                                # inner array index based on mapping array names like
+                                # "pSomeThings[]" to "someThingCount" array size.
+                                # This could be more robust by mapping a param member
+                                # name to a struct type and "len" attribute.
+                                limit = element[0:element.find('s[]')] + 'Count'
+                                dotp = limit.rfind('.p')
+                                limit = limit[0:dotp+1] + limit[dotp+2:dotp+3].lower() + limit[dotp+3:]
+                                paramdecl += '        for(uint32_t index2=0;index2<'+limit+';index2++)\n'
+                                element = element.replace('[]','[index2]')
+                            paramdecl += '            ' + functionprefix + 'WriteObject(my_data, ' + element + ');\n'
+                        paramdecl += '    }\n'
+                    else:
+                        # externsync can list members to synchronize
+                        for member in externsync.split(","):
+                            paramdecl += '    ' + functionprefix + 'WriteObject(my_data, ' + member + ');\n'
+                else:
+                    paramtype = param.find('type')
+                    if paramtype is not None:
+                        paramtype = paramtype.text
+                    else:
+                        paramtype = 'None'
+                    if paramtype in thread_check_nondispatchable_objects:
+                        if self.paramIsArray(param) and ('pPipelines' != paramname.text):
+                            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+                            paramdecl += '        ' + functionprefix + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
+                            paramdecl += '    }\n'
+                        elif not self.paramIsPointer(param):
+                            # Pointer params are often being created.
+                            # They are not being read from.
+                            paramdecl += '    ' + functionprefix + 'ReadObject(my_data, ' + paramname.text + ');\n'
+        if (paramdecl == ''):
+            return None
+        else:
+            return paramdecl
+
     #
     # Capture command parameter info needed to wrap NDOs
     def genCmd(self, cmdinfo, name):
+        # Commands shadowed by interface functions and are not implemented
+        interface_functions = [
+            'vkEnumerateInstanceLayerProperties',
+            'vkEnumerateInstanceExtensionProperties',
+            'vkEnumerateDeviceLayerProperties',
+        ]
+        if name in interface_functions:
+            return
+        special_functions = [
+            'vkGetDeviceProcAddr',
+            'vkGetInstanceProcAddr',
+            'vkCreateDevice',
+            'vkDestroyDevice',
+            'vkCreateInstance',
+            'vkDestroyInstance',
+            'vkAllocateCommandBuffers',
+            'vkFreeCommandBuffers',
+            'vkCreateDebugReportCallbackEXT',
+            'vkDestroyDebugReportCallbackEXT',
+        ]
+        if name in special_functions:
+            decls = self.makeCDecls(cmdinfo.elem)
+            self.appendSection('command', '')
+            self.appendSection('command', '// declare only')
+            self.appendSection('command', decls[0])
+            self.intercepts += [ '    {"%s", reinterpret_cast<PFN_vkVoidFunction>(%s)},' % (name,name[2:]) ]
+            return
+
+        if "KHR" in name:
+            self.appendSection('command', '// TODO - not wrapping KHR function ' + name)
+            return
+        if ("DebugMarker" in name) and ("EXT" in name):
+            self.appendSection('command', '// TODO - not wrapping EXT function ' + name)
+            return
+
+        # Determine first if this function needs to be intercepted
+        api_needs_wrapping = self.makeObjectsWrapBlock(cmdinfo.elem, 'start')
+        if api_needs_wrapping is None:
+            return
+
+        finish_wrapping_objects = self.makeObjectsWrapBlock(cmdinfo.elem, 'finish')
+        # record that the function will be intercepted
+        if (self.featureExtraProtect != None):
+            self.intercepts += [ '#ifdef %s' % self.featureExtraProtect ]
+        self.intercepts += [ '    {"%s", reinterpret_cast<PFN_vkVoidFunction>(%s)},' % (name,name[2:]) ]
+        if (self.featureExtraProtect != None):
+            self.intercepts += [ '#endif' ]
+
         OutputGenerator.genCmd(self, cmdinfo, name)
 
-        return_val = cmdinfo.elem.findall('proto')
-        return_type = self.getTypeNameTuple(return_val[0])
+        #
+        decls = self.makeCDecls(cmdinfo.elem)
+        self.appendSection('command', '')
+        self.appendSection('command', decls[0][:-1])
+        self.appendSection('command', '{')
+        # setup common to call wrappers
+        # first parameter is always dispatchable
+        dispatchable_type = cmdinfo.elem.find('param/type').text
+        dispatchable_name = cmdinfo.elem.find('param/name').text
+        self.appendSection('command', '    dispatch_key key = get_dispatch_key('+dispatchable_name+');')
+        self.appendSection('command', '    layer_data *my_data = get_my_data_ptr(key, layer_data_map);')
+        if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
+            self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = my_data->instance_dispatch_table;')
+        else:
+            self.appendSection('command', '    VkLayerDispatchTable *pTable = my_data->device_dispatch_table;')
+        # Declare result variable, if any.
+        resulttype = cmdinfo.elem.find('proto/type')
+        if (resulttype != None and resulttype.text == 'void'):
+          resulttype = None
+        if (resulttype != None):
+            self.appendSection('command', '    ' + resulttype.text + ' result;')
+            assignresult = 'result = '
+        else:
+            assignresult = ''
 
-        # Get param info
-        params = cmdinfo.elem.findall('param')
+        self.appendSection('command', '    bool threadChecks = startMultiThread();')
+        self.appendSection('command', '    if (threadChecks) {')
+        self.appendSection('command', "    "+"\n    ".join(str(api_needs_wrapping).rstrip().split("\n")))
+        self.appendSection('command', '    }')
+        params = cmdinfo.elem.findall('param/name')
+        paramstext = ','.join([str(param.text) for param in params])
+        API = cmdinfo.elem.attrib.get('name').replace('vk','pTable->',1)
+        self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
+        self.appendSection('command', '    if (threadChecks) {')
+        self.appendSection('command', "    "+"\n    ".join(str(finish_wrapping_objects).rstrip().split("\n")))
+        self.appendSection('command', '    } else {')
+        self.appendSection('command', '        finishMultiThread();')
+        self.appendSection('command', '    }')
+        # Return result variable, if any.
+        if (resulttype != None):
+            self.appendSection('command', '    return result;')
+        self.appendSection('command', '}')
 
-        paramsInfo = []
-        for param in params:
-            paramInfo = self.getTypeNameTuple(param)
-            cdecl = self.makeCParamDecl(param, 0)
-            paramsInfo.append(self.CommandParam(type=paramInfo[0], name=paramInfo[1],
-                                                extstructs=None,
-                                                condition=None,
-                                                cdecl=cdecl))
-        self.commands.append(self.CommandData(name=name, return_type=return_type, params=paramsInfo, cdecl=self.makeCDecls(cmdinfo.elem)[0]))
     #
     # Retrieve the type and name for a parameter
     def getTypeNameTuple(self, param):

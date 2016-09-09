@@ -320,7 +320,7 @@ buildList = [
     ],
     [ UniqueObjectsOutputGenerator,
       UniqueObjectsGeneratorOptions(
-        filename          = 'unique_objects.cpp',
+        filename          = 'unique_objects_wrappers.h',
         apiname           = 'vulkan',
         profile           = None,
         versions          = allVersions,
