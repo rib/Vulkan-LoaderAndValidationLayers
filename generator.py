@@ -3942,7 +3942,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 ####        self.processStructMemberData()
 
 
-            self.processCmdData()
+####        self.processCmdData()
 
             # Write the parameter validation code to the file
             if (self.sections['command']):
@@ -3966,27 +3966,15 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
     def paramIsPointer(self, param):
         ispointer = False
         for elem in param:
-            #write('paramIsPointer '+elem.text, file=sys.stderr)
-            #write('elem.tag '+elem.tag, file=sys.stderr)
-            #if (elem.tail is None):
-            #    write('elem.tail is None', file=sys.stderr)
-            #else:
-            #    write('elem.tail '+elem.tail, file=sys.stderr)
             if ((elem.tag is not 'type') and (elem.tail is not None)) and '*' in elem.tail:
                 ispointer = True
             #    write('is pointer', file=sys.stderr)
         return ispointer
 
-    def makeObjectsWrapBlock(self, cmd, functionprefix):
+    def makeObjectsWrapBlock(self, cmd):
         """Generate C function pointer typedef for <command> Element"""
         paramdecl = ''
-        thread_check_dispatchable_objects = [
-            "VkCommandBuffer",
-            "VkDevice",
-            "VkInstance",
-            "VkQueue",
-        ]
-        thread_check_nondispatchable_objects = [
+        uniquify_nondispatchable_objects = [
             "VkBuffer",
             "VkBufferView",
             "VkCommandPool",
@@ -4019,10 +4007,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 if externsync == 'true':
                     if self.paramIsArray(param):
                         paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-                        paramdecl += '        ' + functionprefix + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
+                        paramdecl += '        ' + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
                         paramdecl += '    }\n'
                     else:
-                        paramdecl += '    ' + functionprefix + 'WriteObject(my_data, ' + paramname.text + ');\n'
+                        paramdecl += '    ' + 'WriteObject(my_data, ' + paramname.text + ');\n'
                 elif (param.attrib.get('externsync')):
                     if self.paramIsArray(param):
                         # Externsync can list pointers to arrays of members to synchronize
@@ -4041,27 +4029,27 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                                 limit = limit[0:dotp+1] + limit[dotp+2:dotp+3].lower() + limit[dotp+3:]
                                 paramdecl += '        for(uint32_t index2=0;index2<'+limit+';index2++)\n'
                                 element = element.replace('[]','[index2]')
-                            paramdecl += '            ' + functionprefix + 'WriteObject(my_data, ' + element + ');\n'
+                            paramdecl += '            ' + 'WriteObject(my_data, ' + element + ');\n'
                         paramdecl += '    }\n'
                     else:
                         # externsync can list members to synchronize
                         for member in externsync.split(","):
-                            paramdecl += '    ' + functionprefix + 'WriteObject(my_data, ' + member + ');\n'
+                            paramdecl += '    ' + 'WriteObject(my_data, ' + member + ');\n'
                 else:
                     paramtype = param.find('type')
                     if paramtype is not None:
                         paramtype = paramtype.text
                     else:
                         paramtype = 'None'
-                    if paramtype in thread_check_nondispatchable_objects:
+                    if paramtype in uniquify_nondispatchable_objects:
                         if self.paramIsArray(param) and ('pPipelines' != paramname.text):
                             paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-                            paramdecl += '        ' + functionprefix + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
+                            paramdecl += '        ' + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
                             paramdecl += '    }\n'
                         elif not self.paramIsPointer(param):
                             # Pointer params are often being created.
                             # They are not being read from.
-                            paramdecl += '    ' + functionprefix + 'ReadObject(my_data, ' + paramname.text + ');\n'
+                            paramdecl += '    ' + 'ReadObject(my_data, ' + paramname.text + ');\n'
         if (paramdecl == ''):
             return None
         else:
@@ -4106,11 +4094,11 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             return
 
         # Determine first if this function needs to be intercepted
-        api_needs_wrapping = self.makeObjectsWrapBlock(cmdinfo.elem, 'start')
+        api_needs_wrapping = self.makeObjectsWrapBlock(cmdinfo.elem)
         if api_needs_wrapping is None:
             return
 
-        finish_wrapping_objects = self.makeObjectsWrapBlock(cmdinfo.elem, 'finish')
+        finish_wrapping_objects = self.makeObjectsWrapBlock(cmdinfo.elem)
         # record that the function will be intercepted
         if (self.featureExtraProtect != None):
             self.intercepts += [ '#ifdef %s' % self.featureExtraProtect ]
@@ -4129,12 +4117,11 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         # first parameter is always dispatchable
         dispatchable_type = cmdinfo.elem.find('param/type').text
         dispatchable_name = cmdinfo.elem.find('param/name').text
-        self.appendSection('command', '    dispatch_key key = get_dispatch_key('+dispatchable_name+');')
-        self.appendSection('command', '    layer_data *my_data = get_my_data_ptr(key, layer_data_map);')
+        self.appendSection('command', '    layer_data *dev_data = get_my_data_ptr(get_dispatch_key('+dispatchable_name+'), layer_data_map);')
         if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
-            self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = my_data->instance_dispatch_table;')
+            self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = dev_data->instance_dispatch_table;')
         else:
-            self.appendSection('command', '    VkLayerDispatchTable *pTable = my_data->device_dispatch_table;')
+            self.appendSection('command', '    VkLayerDispatchTable *pTable = dev_data->device_dispatch_table;')
         # Declare result variable, if any.
         resulttype = cmdinfo.elem.find('proto/type')
         if (resulttype != None and resulttype.text == 'void'):
@@ -4145,19 +4132,21 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         else:
             assignresult = ''
 
-        self.appendSection('command', '    bool threadChecks = startMultiThread();')
-        self.appendSection('command', '    if (threadChecks) {')
-        self.appendSection('command', "    "+"\n    ".join(str(api_needs_wrapping).rstrip().split("\n")))
-        self.appendSection('command', '    }')
+        #self.appendSection('command', '    bool threadChecks = startMultiThread();')
+        #self.appendSection('command', '    if (threadChecks) {')
+        #self.appendSection('command', "    "+"\n    ".join(str(api_needs_wrapping).rstrip().split("\n")))
+        #self.appendSection('command', '    }')
         params = cmdinfo.elem.findall('param/name')
         paramstext = ','.join([str(param.text) for param in params])
         API = cmdinfo.elem.attrib.get('name').replace('vk','pTable->',1)
         self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
-        self.appendSection('command', '    if (threadChecks) {')
-        self.appendSection('command', "    "+"\n    ".join(str(finish_wrapping_objects).rstrip().split("\n")))
-        self.appendSection('command', '    } else {')
-        self.appendSection('command', '        finishMultiThread();')
-        self.appendSection('command', '    }')
+
+
+        #self.appendSection('command', '    if (threadChecks) {')
+        #self.appendSection('command', "    "+"\n    ".join(str(finish_wrapping_objects).rstrip().split("\n")))
+        #self.appendSection('command', '    } else {')
+        #self.appendSection('command', '        finishMultiThread();')
+        #self.appendSection('command', '    }')
         # Return result variable, if any.
         if (resulttype != None):
             self.appendSection('command', '    return result;')
@@ -4238,13 +4227,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                     else:
                         cmdDef += indent + line
                 cmdDef += '\n'
-
-
-                #if cmd.return_type != "void":
-                #    return '\n'.join(lines)
-                #else:
-                #    return '\n'.join(lines)
-
 
                 # Insert code to call down the chain, inserting return where appropriate
                 # VkResult result = get_dispatch_table(unique_objects_device_table_map, queue)->QueueSubmit(queue, submitCount, (const VkSubmitInfo*)local_pSubmits, fence);
