@@ -3938,12 +3938,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 write('#ifdef', self.featureExtraProtect, file=self.outFile)
             # Generate the struct member checking code from the captured data
 
-
-####        self.processStructMemberData()
-
-
-####        self.processCmdData()
-
             # Write the parameter validation code to the file
             if (self.sections['command']):
                 if (self.genOpts.protectProto):
@@ -3970,86 +3964,99 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 ispointer = True
             #    write('is pointer', file=sys.stderr)
         return ispointer
+    #
+    # Get the category of a type
+    def getTypeCategory(self, typename):
+        types = self.registry.findall("types/type")
+        for elem in types:
+            if (elem.find("name") is not None and elem.find('name').text == typename) or elem.attrib.get('name') == typename:
+                return elem.attrib.get('category')
+    #
+    # Check if a parent object is dispatchable or not
+    def isHandleTypeNonDispatchable(self, handlename):
+        handle = self.registry.find("types/type/[name='" + handlename + "'][@category='handle']")
+        if handle is not None and handle.find('type').text == 'VK_DEFINE_NON_DISPATCHABLE_HANDLE':
+            return True
+        else:
+            return False
 
-    def makeObjectsWrapBlock(self, cmd):
+    def generate_wrapping_code(self, cmd, operation):
         """Generate C function pointer typedef for <command> Element"""
         paramdecl = ''
-        uniquify_nondispatchable_objects = [
-            "VkBuffer",
-            "VkBufferView",
-            "VkCommandPool",
-            "VkDescriptorPool",
-            "VkDescriptorSetLayout",
-            "VkDeviceMemory",
-            "VkEvent",
-            "VkFence",
-            "VkFramebuffer",
-            "VkImage",
-            "VkImageView",
-            "VkPipeline",
-            "VkPipelineCache",
-            "VkPipelineLayout",
-            "VkQueryPool",
-            "VkRenderPass",
-            "VkSampler",
-            "VkSemaphore",
-            "VkShaderModule",
-        ]
 
         # Find and add any parameters that contain NDOs
         params = cmd.findall('param')
         for param in params:
+
             paramname = param.find('name')
-            if False: # self.paramIsPointer(param):
-                paramdecl += '    // not watching use of pointer ' + paramname.text + '\n'
-            else:
-                externsync = param.attrib.get('externsync')
-                if externsync == 'true':
-                    if self.paramIsArray(param):
-                        paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-                        paramdecl += '        ' + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
-                        paramdecl += '    }\n'
+            paramtype = param.find('type')
+            typecategory = self.getTypeCategory(paramtype.text)
+
+            is_struct=True if typecategory == 'struct' else False
+            is_count=True if param.attrib.get('len') is not None else False
+
+            if typecategory == 'handle':
+                if self.isHandleTypeNonDispatchable(paramtype.text):
+                    verb = []
+                    if operation == 'create':
+                        verb = '    // Create Wrapping Code'
                     else:
-                        paramdecl += '    ' + 'WriteObject(my_data, ' + paramname.text + ');\n'
-                elif (param.attrib.get('externsync')):
-                    if self.paramIsArray(param):
-                        # Externsync can list pointers to arrays of members to synchronize
-                        paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-                        for member in externsync.split(","):
-                            # Replace first empty [] in member name with index
-                            element = member.replace('[]','[index]',1)
-                            if '[]' in element:
-                                # Replace any second empty [] in element name with
-                                # inner array index based on mapping array names like
-                                # "pSomeThings[]" to "someThingCount" array size.
-                                # This could be more robust by mapping a param member
-                                # name to a struct type and "len" attribute.
-                                limit = element[0:element.find('s[]')] + 'Count'
-                                dotp = limit.rfind('.p')
-                                limit = limit[0:dotp+1] + limit[dotp+2:dotp+3].lower() + limit[dotp+3:]
-                                paramdecl += '        for(uint32_t index2=0;index2<'+limit+';index2++)\n'
-                                element = element.replace('[]','[index2]')
-                            paramdecl += '            ' + 'WriteObject(my_data, ' + element + ');\n'
-                        paramdecl += '    }\n'
-                    else:
-                        # externsync can list members to synchronize
-                        for member in externsync.split(","):
-                            paramdecl += '    ' + 'WriteObject(my_data, ' + member + ');\n'
-                else:
-                    paramtype = param.find('type')
-                    if paramtype is not None:
-                        paramtype = paramtype.text
-                    else:
-                        paramtype = 'None'
-                    if paramtype in uniquify_nondispatchable_objects:
-                        if self.paramIsArray(param) and ('pPipelines' != paramname.text):
-                            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-                            paramdecl += '        ' + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
-                            paramdecl += '    }\n'
-                        elif not self.paramIsPointer(param):
-                            # Pointer params are often being created.
-                            # They are not being read from.
-                            paramdecl += '    ' + 'ReadObject(my_data, ' + paramname.text + ');\n'
+                        verb = '    // Cleanup Wrapping Code, if necessary'
+                    paramdecl += '    // LUGMAL::  Found NDO ' + paramname.text + '\n'
+                    paramdecl += '    // LUGMAL::  ' + verb + '\n'
+            elif (is_count == True) and (is_struct == True) and (operation == 'create'):
+                paramdecl += '    // HEY: ' + paramname.text + ' of type ' + paramtype.text + ' is an array with a count of ' + param.attrib.get('len') + '\n'
+
+            #if self.paramIsPointer(param):
+            #    paramdecl += '    // not watching use of pointer ' + paramname.text + '\n'
+            #else:
+            #    externsync = param.attrib.get('externsync')
+            #    if externsync == 'true':
+            #        if self.paramIsArray(param):
+            #            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+            #            paramdecl += '        ' + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
+            #            paramdecl += '    }\n'
+            #        else:
+            #            paramdecl += '    ' + 'WriteObject(my_data, ' + paramname.text + ');\n'
+            #    elif (param.attrib.get('externsync')):
+            #        if self.paramIsArray(param):
+            #            # Externsync can list pointers to arrays of members to synchronize
+            #            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+            #            for member in externsync.split(","):
+            #                # Replace first empty [] in member name with index
+            #                element = member.replace('[]','[index]',1)
+            #                if '[]' in element:
+            #                    # Replace any second empty [] in element name with
+            #                    # inner array index based on mapping array names like
+            #                    # "pSomeThings[]" to "someThingCount" array size.
+            #                    # This could be more robust by mapping a param member
+            #                    # name to a struct type and "len" attribute.
+            #                    limit = element[0:element.find('s[]')] + 'Count'
+            #                    dotp = limit.rfind('.p')
+            #                    limit = limit[0:dotp+1] + limit[dotp+2:dotp+3].lower() + limit[dotp+3:]
+            #                    paramdecl += '        for(uint32_t index2=0;index2<'+limit+';index2++)\n'
+            #                    element = element.replace('[]','[index2]')
+            #                paramdecl += '            ' + 'WriteObject(my_data, ' + element + ');\n'
+            #            paramdecl += '    }\n'
+            #        else:
+            #            # externsync can list members to synchronize
+            #            for member in externsync.split(","):
+            #                paramdecl += '    ' + 'WriteObject(my_data, ' + member + ');\n'
+            #    else:
+            #        paramtype = param.find('type')
+            #        if paramtype is not None:
+            #            paramtype = paramtype.text
+            #        else:
+            #            paramtype = 'None'
+            #        if paramtype in uniquify_nondispatchable_objects: use isHsndleNonDispatchable() instead
+            #            if self.paramIsArray(param) and ('pPipelines' != paramname.text):
+            #                paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
+            #                paramdecl += '        ' + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
+            #                paramdecl += '    }\n'
+            #            elif not self.paramIsPointer(param):
+            #                # Pointer params are often being created.
+            #                # They are not being read from.
+            #                paramdecl += '    ' + 'ReadObject(my_data, ' + paramname.text + ');\n'
         if (paramdecl == ''):
             return None
         else:
@@ -4094,11 +4101,11 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             return
 
         # Determine first if this function needs to be intercepted
-        api_needs_wrapping = self.makeObjectsWrapBlock(cmdinfo.elem)
-        if api_needs_wrapping is None:
+        manage_ndo_wrapping = self.generate_wrapping_code(cmdinfo.elem, 'create')
+        if manage_ndo_wrapping is None:
             return
 
-        finish_wrapping_objects = self.makeObjectsWrapBlock(cmdinfo.elem)
+        cleanup_ndo_wrapping = self.generate_wrapping_code(cmdinfo.elem, 'cleanup')
         # record that the function will be intercepted
         if (self.featureExtraProtect != None):
             self.intercepts += [ '#ifdef %s' % self.featureExtraProtect ]
@@ -4108,7 +4115,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
         OutputGenerator.genCmd(self, cmdinfo, name)
 
-        #
+
         decls = self.makeCDecls(cmdinfo.elem)
         self.appendSection('command', '')
         self.appendSection('command', decls[0][:-1])
@@ -4122,7 +4129,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = dev_data->instance_dispatch_table;')
         else:
             self.appendSection('command', '    VkLayerDispatchTable *pTable = dev_data->device_dispatch_table;')
-        # Declare result variable, if any.
+
+        # Handle return values, if any
         resulttype = cmdinfo.elem.find('proto/type')
         if (resulttype != None and resulttype.text == 'void'):
           resulttype = None
@@ -4132,106 +4140,14 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         else:
             assignresult = ''
 
-        #self.appendSection('command', '    bool threadChecks = startMultiThread();')
-        #self.appendSection('command', '    if (threadChecks) {')
-        #self.appendSection('command', "    "+"\n    ".join(str(api_needs_wrapping).rstrip().split("\n")))
-        #self.appendSection('command', '    }')
+        self.appendSection('command', "    "+"\n    ".join(str(manage_ndo_wrapping).rstrip().split("\n")))
         params = cmdinfo.elem.findall('param/name')
         paramstext = ','.join([str(param.text) for param in params])
         API = cmdinfo.elem.attrib.get('name').replace('vk','pTable->',1)
         self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
 
-
-        #self.appendSection('command', '    if (threadChecks) {')
-        #self.appendSection('command', "    "+"\n    ".join(str(finish_wrapping_objects).rstrip().split("\n")))
-        #self.appendSection('command', '    } else {')
-        #self.appendSection('command', '        finishMultiThread();')
-        #self.appendSection('command', '    }')
+        self.appendSection('command', "    "+"\n    ".join(str(cleanup_ndo_wrapping).rstrip().split("\n")))
         # Return result variable, if any.
         if (resulttype != None):
             self.appendSection('command', '    return result;')
         self.appendSection('command', '}')
-
-    #
-    # Retrieve the type and name for a parameter
-    def getTypeNameTuple(self, param):
-        type = ''
-        name = ''
-        for elem in param:
-            if elem.tag == 'type':
-                type = noneStr(elem.text)
-            elif elem.tag == 'name':
-                name = noneStr(elem.text)
-        return (type, name)
-    #
-    # Convert a vulkan.h command declaration 
-    def getCmdDef(self, cmd):
-        #
-        # Strip the trailing ';' and split into individual lines
-        lines = cmd.cdecl[:-1].split('\n')
-        return '\n'.join(lines)
-    #
-    # Generate the unique objects code
-    def genFuncBody(self, funcName, return_type, values, valuePrefix, displayNamePrefix, structTypeName):
-        lines = []    # Generated lines of code
-        return_var = []
-        if funcName in self.blacklist:
-            lines.append(' Hey! This is the body of blacklisted command  "{}"'.format(funcName))
-            if return_type != "void":
-                lines.append('return ')
-            lines.append(funcName + '(')
-            #for parameter in values:
-            #    lines.append(parameter 
-        else:
-            lines.append(' Hey! This is the body of NON_BLACKLISTED command  "{}"'.format(funcName))        #### LUGMAL We need to loop through the parameters, calling a function for each struct/union that will safe-structify and wrap it's NDO handles, perhaps recursively.
-            #### LUGMAL then make the call down the chain using the safe-structs and unwrapped object handles, either with a return or if crap needs to be destroyed, saving the return value
-            #### LUGMAL destroy any temporary structures
-            #### LUGMAL and return the saved return value of the appropriate type (use auto?)
-
-            #### LUGMAL if it's a create function (Create or Allocate in proto name), add code to get uniqid and add it to map
-            #### LUGMAL if it's a destroy function (Destroy or Free in proto name), add code to remove uniqid from map
-
-            for value in values:
-                usedLines = []
-                # If this is a struct, see if it contains members that need to be checked
-                if value.type in self.validatedStructs:
-                    memberNamePrefix = '{}{}.'.format(valuePrefix, value.name)
-                    memberDisplayNamePrefix = '{}.'.format(valueDisplayName)
-
-        return lines
-    #
-    # Generate the struct member check code from the captured data
-    def processStructMemberData(self):
-        indent = self.incIndent(None)
-        for struct in self.structMembers:
-            #
-            # The string returned by genFuncBody will be nested in an if check for a NULL pointer, so needs its indent incremented
-            lines = self.genFuncBody('{funcName}', '', struct.members, '{valuePrefix}', '{displayNamePrefix}', struct.name)
-            if lines:
-                self.validatedStructs[struct.name] = lines
-    #
-    # Generate the unique objects code from the captured data
-    def processCmdData(self):
-        indent = self.incIndent(None)
-        for command in self.commands:
-            startIndex = 0
-            lines = self.genFuncBody(command.name, command.return_type, command.params[startIndex:], '', '', None)
-            if lines:
-                cmdDef = self.getCmdDef(command) + '\n'
-                cmdDef += '{\n'
-                for line in lines:
-                    cmdDef += '\n'
-                    if type(line) is list:
-                        for sub in line:
-                            cmdDef += indent + sub
-                    else:
-                        cmdDef += indent + line
-                cmdDef += '\n'
-
-                # Insert code to call down the chain, inserting return where appropriate
-                # VkResult result = get_dispatch_table(unique_objects_device_table_map, queue)->QueueSubmit(queue, submitCount, (const VkSubmitInfo*)local_pSubmits, fence);
-
-                cmdDef += indent + 'return blah;\n'
-                cmdDef += '}\n'
-                self.appendSection('command', cmdDef)
-
