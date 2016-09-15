@@ -3982,8 +3982,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 return elem.attrib.get('category')
     #
     # Check if a parent object is dispatchable or not
-    def isHandleTypeNonDispatchable(self, handlename):
-        handle = self.registry.find("types/type/[name='" + handlename + "'][@category='handle']")
+    def isHandleTypeNonDispatchable(self, handletype):
+        handle = self.registry.find("types/type/[name='" + handletype + "'][@category='handle']")
         if handle is not None and handle.find('type').text == 'VK_DEFINE_NON_DISPATCHABLE_HANDLE':
             return True
         else:
@@ -4010,15 +4010,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if (category == 'struct' or category == 'union'):
             self.structNames.append(name)
             self.genStruct(typeinfo, name)
-        # LUGMAL
-        #elif (category == 'handle'):
-        #    self.handleTypes.add(name)
-        #elif (category == 'bitmask'):
-        #    self.flags.add(name)
-        #elif (category == 'define'):
-        #    if name == 'VK_HEADER_VERSION':
-        #        nameElem = typeElem.find('name')
-        #        self.headerVersion = noneStr(nameElem.tail).strip()
+
     #
     # Struct parameter check generation.
     # This is a special case of the <type> tag where the contents are
@@ -4085,107 +4077,134 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
     #
     # Determine if a struct has an NDO as a member or an embedded member
     def struct_contains_ndo(self, struct_item):
-        #fred = struct_item.find('type').text
-        george = dict(self.structMembers)
-        struct_members = george[struct_item]
+        struct_member_dict = dict(self.structMembers)
+        struct_members = struct_member_dict[struct_item]
 
         for member in struct_members:
             if self.isHandleTypeNonDispatchable(member.type):
                 return True
-            elif member.type in george:  #typecategory == 'struct':
+            elif member.type in struct_member_dict:
                 if self.struct_contains_ndo(member.type) == True:
                     return True
         return False
 
     #
     # Return lists of NDO members and struct members in a given list of parameters or members
-    def getStructsAndNdos(self, item_list):
+    def getStructsAndNdos(self, item_list, create_func):
         ndo_list = set()
         struct_list = set()
 
-        for item in item_list:
+        if create_func == True:
+            member_list = item_list[0:-1]
+        else:
+            member_list = item_list
+
+        for item in member_list:
+            # if create_func is true, skip last item
+            # HERE
             paramname = item.find('name')
             paramtype = item.find('type')
             typecategory = self.getTypeCategory(paramtype.text)
 
             # Is this an array item?  if so, set array to the name
             is_struct=True if typecategory == 'struct' else False
-            is_count=True if item.attrib.get('len') is not None else False
-
-            joe = paramname.text
+            #### Why do we need a count here?  is_count=True if item.attrib.get('len') is not None else False
 
             if typecategory == 'handle':
                 if self.isHandleTypeNonDispatchable(paramtype.text):
                     ndo_list.add(item)
-            elif (is_count == True) and (is_struct == True):
+            elif is_struct == True:
                 if self.struct_contains_ndo(paramtype.text) == True:
                     struct_list.add(item)
 
-        for tmp_ndo in ndo_list:
-            ndo_name = tmp_ndo.find('name')
-            fred = ndo_name.text
-
-        for tmp_struct in struct_list:
-            struct_name = tmp_struct.find('name')
-            bob = struct_name.text
-
         return(ndo_list, struct_list)
 
+    #
+    # Generate source for creating a non-dispatchable object
+    def generate_create_ndo_code(self, indent, proto, params):
+        create_ndo_code = ''
+
+        if True in [create_txt in proto.text for create_txt in ['Create', 'Allocate']]:
+            create_func = True
+          # LUGMAL from line 930 in vklg
+            handle_type = params[-1].find('type')
+            handle_name = params[-1].find('name')
+
+            create_ndo_code += '\n%sif (VK_SUCCESS == result) {\n' % (indent)
+            indent += '    '
+            create_ndo_code += '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % (indent)
+            create_ndo_code += '%suint64_t unique_id = global_unique_id++;\n' % (indent)
+            create_ndo_code += '%sdev_data->unique_id_mapping[unique_id] = reinterpret_cast<uint64_t &>(*%s);\n' % (indent, handle_name.text)
+            create_ndo_code += '%s*%s = reinterpret_cast<%s&>(unique_id);\n' % (indent, handle_name.text, handle_type.text)
+            indent = indent[4:]
+            create_ndo_code += '%s}\n' % (indent)
+        return create_ndo_code
+
+    #
+    # Generate source for destroying a non-dispatchable object
+    def generate_destroy_ndo_code(self, indent, proto, params):
+        destroy_ndo_code = ''
+
+        if True in [destroy_txt in proto.text for destroy_txt in ['Destroy', 'Free']]:
+            destroy_obj_type = params[-2].find('type')
+            if self.isHandleTypeNonDispatchable(destroy_obj_type.text) == True:
+                destroy_func = True
+                destroy_obj_name = params[-2].find('name')
+                destroy_ndo_code += '%sstd::unique_lock<std::mutex> lock(global_lock);\n' % (indent)
+                destroy_ndo_code += '%suint64_t local_%s = reinterpret_cast<uint64_t &>(%s);\n' % (indent, destroy_obj_name.text, destroy_obj_name.text)
+                destroy_ndo_code += '%s%s = (%s)dev_data->unique_id_mapping[local_%s];\n' % (indent, destroy_obj_name.text, destroy_obj_type.text, destroy_obj_name.text)
+                destroy_ndo_code += '%sdev_data->unique_id_mapping.erase(local%s);\n' % (indent, destroy_obj_name.text)
+                destroy_ndo_code += '%slock.unlock();}\n' % (indent)
+        return destroy_ndo_code
 
 
     # Generate UniqueObjects code for given struct_uses dict of objects that need to be unwrapped
-    # vector_name_set is used to make sure we don't replicate vector names
     # first_level_param indicates if elements are passed directly into the function else they're below a ptr/struct
-    # TODO : Comment this code
-
-    #### item_list is either parameters to an API call (first_level_param = True) or elements of an array (first_level_param = False)
-    def _gen_obj_code(self, item_list, indent, prefix, array_index, first_level_param):
+    def _gen_obj_code(self, item_list, indent, prefix, array_index, create_func, first_level_param):
         decls = ''
         pre_code = ''
         post_code = ''
 
         ndo_list = set()
         struct_list = set()
-        (ndo_list, struct_list) = self.getStructsAndNdos(item_list)
+        (ndo_list, struct_list) = self.getStructsAndNdos(item_list, create_func)
+        if not ndo_list and not struct_list and not create_func:
+            return '', '', ''
+
+        # Debugging Code:
         for item in ndo_list:
             paramname = item.find('name')
             paramtype = item.find('type')
-            decls += '// XXXXXXXXXXXXXXXXXXXXXXXXXX NDO    ' + paramname.text + ' of type ' + paramtype.text + '\n'
+            decls += '// Detected NDO:          ' + paramname.text + ' of type ' + paramtype.text + '\n'
         for item in struct_list:
             paramname = item.find('name')
             paramtype = item.find('type')
-            decls += '// XXXXXXXXXXXXXXXXXXXXXXXXXX STRUCT ' + paramname.text + ' of type ' + paramtype.text + '\n'
+            decls += '// STRUCT containing NDO: ' + paramname.text + ' of type ' + paramtype.text + '\n'
 
-
-
-        for item in item_list:
-            name = item
+         # Handle all NDOs in parameter list for this command
+        for item in ndo_list:
+            #name = item
 
             paramname = item.find('name')
             paramtype = item.find('type')
-            typecategory = self.getTypeCategory(paramtype.text)
 
-            # Is this an array item?  if so, set array to the name
-            is_struct=True if typecategory == 'struct' else False
-            is_count=True if item.attrib.get('len') is not None else False
+            if self.paramIsPointer(item):
+                pre_code += '%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, paramname.text)
+                #pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
+            else:
+                pre_code += '%s// LUGMAL::  Found NDO (%s)\n' % (indent, paramname.text)
+                pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
 
-            if typecategory == 'handle':
-                if self.isHandleTypeNonDispatchable(paramtype.text):
-                    if self.paramIsPointer(item):
-                        decls += '// LUGMAL::  Found NDO Pointer (' + paramname.text + ')\n'
-                    else:
-                        pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
-                        #### decls += '// LUGMAL::  Found NDO (' + paramname.text + ')\n'
-            # Structure
-            elif (is_count == True) and (is_struct == True):
-                local_prefix = ''
-                name = '%s%s' % (prefix, paramname.text)
+        # Handle all structures that contain NDOs in parameter list for this command
+        for item in struct_list:
+            local_prefix = ''
+            name = '%s%s' % (prefix, paramname.text)
 
-                if first_level_param:
-                    pre_code += '%sif (%s) {\n' % (indent, name)
-                else: # shadow ptr will have been initialized at this point so check it vs. source ptr
-                    pre_code += '%sif (local_%s) {\n' % (indent, name)
-                indent += '    '
+            if first_level_param:
+                pre_code += '%sif (%s) {\n' % (indent, name)
+            else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+                pre_code += '%sif (local_%s) {\n' % (indent, name)
+            indent += '    '
 
              #    if array != '':
              #        if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
@@ -4262,57 +4281,33 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         paramdecl = ''
         param_pre_code = ''
         param_post_code = ''
+        create_ndo_code = ''
         create_func = False
         indent = '    '
 
         proto = cmd.find('proto/name')
-        if proto.text is not None:
-            if True in [create_txt in proto.text for create_txt in ['Create', 'Allocate']]:
-                create_func = True
-
-        # Find and add any parameters that contain NDOs
         params = cmd.findall('param')
-        (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, True)
 
+        if proto.text is not None:
 
-        if create_func == True:
-            handle_type = params[-1].find('type')
-            handle_name = params[-1].find('name')
+            # Handle ndo create/allocate operations
+            create_ndo_code = self.generate_create_ndo_code(indent, proto, params)
 
-            param_post_code += '\n%sif (VK_SUCCESS == result) {\n' % (indent)
-            indent += '    '
-            param_post_code += '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % (indent)
-            param_post_code += '%suint64_t unique_id = global_unique_id++;\n' % (indent)
-            param_post_code += '%sdev_data->unique_id_mapping[unique_id] = reinterpret_cast<uint64_t &>(*%s);\n' % (indent, handle_name.text)
-            param_post_code += '%s*%s = reinterpret_cast<%s&>(unique_id);\n' % (indent, handle_name.text, handle_type.text)
-            indent = indent[4:]
-            param_post_code += '%s}\n' % (indent)
+            # Handle ndo destroy/free operations
+            destroy_ndo_code = self.generate_destroy_ndo_code(indent, proto, params)
 
-#        else:
+            # Find and process any parameters that contain NDOs
+            (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, create_func, True)
 
+            param_post_code = param_post_code.join(create_ndo_code)
+            param_pre_code = param_pre_code.join(destroy_ndo_code)
 
+            if not paramdecl and not param_pre_code and not param_post_code:
+                return '', '', ''
 
-
-        #for param in params:
-
-        #    paramname = param.find('name')
-        #    paramtype = param.find('type')
-        #    typecategory = self.getTypeCategory(paramtype.text)
-
-        #    is_struct=True if typecategory == 'struct' else False
-        #    is_count=True if param.attrib.get('len') is not None else False
-
-        #    if typecategory == 'handle':
-        #        if self.isHandleTypeNonDispatchable(paramtype.text):
-        #            verb = []
-        #            if operation == 'create':
-        #                verb = '    // Create Wrapping Code'
-        #            else:
-        #                verb = '    // Cleanup Wrapping Code, if necessary'
-        #            paramdecl += '    // LUGMAL::  Found NDO ' + paramname.text + '\n'
-        #            paramdecl += '    // LUGMAL::  ' + verb + '\n'
-        #    elif (is_count == True) and (is_struct == True) and (operation == 'create'):
-        #        paramdecl += '    // HEY: ' + paramname.text + ' of type ' + paramtype.text + ' is an array with a count of ' + param.attrib.get('len') + '\n'
+            # LUGMAL from line 926 in vklg
+            if param_pre_code != '': # lock around map uses
+                param_pre_code = '%s{\n%sstd::lock_guard<std::mmmmmutex> lock(global_lock);\n%s%s}\n' % (indent, indent, param_pre_code, indent)
 
         return paramdecl, param_pre_code, param_post_code
 
@@ -4342,9 +4337,12 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             self.appendSection('command', '// TODO - not wrapping EXT function ' + name)
             return
 
+        # Generate NDO wrapping/unwrapping code for all parameters
         (api_decls, api_pre, api_post) = self.generate_wrapping_code(cmdinfo.elem)
-        #if api_pre is None:
-        #    return
+
+        # If API doesn't contain an NDO's, don't fool with it
+        if not api_decls and not api_pre and not api_post:
+            return
 
         # record that the function will be intercepted
         if (self.featureExtraProtect != None):
@@ -4355,11 +4353,12 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
         OutputGenerator.genCmd(self, cmdinfo, name)
 
-        indent = '    ' # indent level for generated code
+        indent = '    '
         decls = self.makeCDecls(cmdinfo.elem)
         self.appendSection('command', '')
         self.appendSection('command', decls[0][:-1])
         self.appendSection('command', '{')
+
         # setup common to call wrappers
         # first parameter is always dispatchable
         dispatchable_type = cmdinfo.elem.find('param/type').text
@@ -4376,12 +4375,13 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         else:
             assignresult = ''
 
+        # Pre-pend declarations and pre-api-call codegen
+        if api_decls:
+            self.appendSection('command', "\n    ".join(str(api_decls).rstrip().split("\n")))
+        if api_pre:
+            self.appendSection('command', "\n    ".join(str(api_pre).rstrip().split("\n")))
 
-        self.appendSection('command', "    "+"\n    ".join(str(api_decls).rstrip().split("\n")))
-        # insert thread safety here
-        if api_pre != '': # lock around map uses
-            api_pre = '%s{\n%sstd::lock_guard<std::mutex> lock(global_lock);\n%s}\n' % (indent, indent, api_pre)
-        self.appendSection('command', "\n    ".join(str(api_pre).rstrip().split("\n")))
+        # Generate the API call itself
         params = cmdinfo.elem.findall('param/name')
         paramstext = ','.join([str(param.text) for param in params])
         API = ''
@@ -4391,8 +4391,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->device_dispatch_table->',1)
         self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
 
-        self.appendSection('command', "\n    ".join(str(api_post).rstrip().split("\n")))
-        # Return result variable, if any.
+        # And add the post-API-call codegen
+        self.appendSection('command', "\n".join(str(api_post).rstrip().split("\n")))
+
+        # Handle the return result variable, if any
         if (resulttype != None):
             self.appendSection('command', '    return result;')
         self.appendSection('command', '}')
