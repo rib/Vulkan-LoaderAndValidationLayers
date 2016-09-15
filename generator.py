@@ -3822,7 +3822,13 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         self.INDENT_SPACES = 4
         # Commands to ignore
         self.intercepts = []
-        self.blacklist = [
+        self.no_autogen_list = [
+            'vkGetDeviceProcAddr',
+            'vkGetInstanceProcAddr',
+            'vkAllocateCommandBuffers',
+            'vkFreeCommandBuffers',
+            'vkCreateDebugReportCallbackEXT',
+            'vkDestroyDebugReportCallbackEXT',
             'vkGetSwapchainImagesKHR',
             'vkCreateSwapchainKHR',
             'vkCreateInstance',
@@ -3835,6 +3841,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             'vkGetPhysicalDeviceDisplayPropertiesKHR',
             'vkGetDisplayPlaneSupportedDisplaysKHR',
             'vkGetDisplayModePropertiesKHR']
+
         # Validation conditions for some special case struct members that are conditionally validated
         self.structMemberValidationConditions = { 'VkPipelineColorBlendStateCreateInfo' : { 'logicOp' : '{}logicOpEnable == VK_TRUE' } }
         # Header version
@@ -3926,6 +3933,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         self.enumRanges = dict()
         self.flags = set()
         self.flagBits = dict()
+        self.StructMemberData = namedtuple('StructMemberData', ['name', 'members'])
+
     def endFeature(self):
         # C-specific
         # Actually write the interface to the output file.
@@ -3979,88 +3988,333 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             return True
         else:
             return False
+    #
+    # Retrieve the type and name for a parameter
+    def getTypeNameTuple(self, param):
+        type = ''
+        name = ''
+        for elem in param:
+            if elem.tag == 'type':
+                type = noneStr(elem.text)
+            elif elem.tag == 'name':
+                name = noneStr(elem.text)
+        return (type, name)
+    #
+    # Type generation
+    def genType(self, typeinfo, name):
+        OutputGenerator.genType(self, typeinfo, name)
+        typeElem = typeinfo.elem
+        # If the type is a struct type, traverse the imbedded <member> tags
+        # generating a structure. Otherwise, emit the tag text.
+        category = typeElem.get('category')
+        if (category == 'struct' or category == 'union'):
+            self.structNames.append(name)
+            self.genStruct(typeinfo, name)
+        # LUGMAL
+        #elif (category == 'handle'):
+        #    self.handleTypes.add(name)
+        #elif (category == 'bitmask'):
+        #    self.flags.add(name)
+        #elif (category == 'define'):
+        #    if name == 'VK_HEADER_VERSION':
+        #        nameElem = typeElem.find('name')
+        #        self.headerVersion = noneStr(nameElem.tail).strip()
+    #
+    # Struct parameter check generation.
+    # This is a special case of the <type> tag where the contents are
+    # interpreted as a set of <member> tags instead of freeform C
+    # C type declarations. The <member> tags are just like <param>
+    # tags - they are a declaration of a struct or union member.
+    # Only simple member declarations are supported (no nested
+    # structs etc.)
+    def genStruct(self, typeinfo, typeName):
+        OutputGenerator.genStruct(self, typeinfo, typeName)
+        conditions = self.structMemberValidationConditions[typeName] if typeName in self.structMemberValidationConditions else None
+        members = typeinfo.elem.findall('.//member')
+        #
+        # Iterate over members once to get length parameters for arrays
+        lens = set()
+        #for member in members:
+        #    len = self.getLen(member)
+        #    if len:
+        #        lens.add(len)
+        #
+        # Generate member info
+        membersInfo = []
+        for member in members:
+            # Get the member's type and name
+            info = self.getTypeNameTuple(member)
+            type = info[0]
+            name = info[1]
+            stypeValue = ''
+            cdecl = self.makeCParamDecl(member, 0)
+            # Process VkStructureType
+            if type == 'VkStructureType':
+                # Extract the required struct type value from the comments
+                # embedded in the original text defining the 'typeinfo' element
+                rawXml = etree.tostring(typeinfo.elem).decode('ascii')
+                result = re.search(r'VK_STRUCTURE_TYPE_\w+', rawXml)
+                if result:
+                    value = result.group(0)
+                else:
+                    value = self.genVkStructureType(typeName)
+                # Store the required type value
+                self.structTypes[typeName] = self.StructType(name=name, value=value)
+            #
+            # Store pointer/array/string info
+            # Check for parameter name in lens set
+            iscount = False
+            if name in lens:
+                iscount = True
+            membersInfo.append(self.CommandParam(type=type, name=name,
+                                                #ispointer=self.paramIsPointer(member),
+                                                #isstaticarray=isstaticarray,
+                                                #isbool=True if type == 'VkBool32' else False,
+                                                #israngedenum=True if type in self.enumRanges else False,
+                                                #isconst=True if 'const' in cdecl else False,
+                                                #isoptional=False,
+                                                #iscount=iscount,
+                                                #noautovalidity=True if member.attrib.get('noautovalidity') is not None else False,
+                                                #len=self.getLen(member),
+                                                extstructs=member.attrib.get('validextensionstructs') if name == 'pNext' else None,
+                                                condition=conditions[name] if conditions and name in conditions else None,
+                                                cdecl=cdecl))
+        self.structMembers.append(self.StructMemberData(name=typeName, members=membersInfo))
 
-    def generate_wrapping_code(self, cmd, operation):
-        """Generate C function pointer typedef for <command> Element"""
-        paramdecl = ''
 
-        # Find and add any parameters that contain NDOs
-        params = cmd.findall('param')
-        for param in params:
+    #
+    # Determine if a struct has an NDO as a member or an embedded member
+    def struct_contains_ndo(self, struct_item):
+        #fred = struct_item.find('type').text
+        george = dict(self.structMembers)
+        struct_members = george[struct_item]
 
-            paramname = param.find('name')
-            paramtype = param.find('type')
+        for member in struct_members:
+            if self.isHandleTypeNonDispatchable(member.type):
+                return True
+            elif member.type in george:  #typecategory == 'struct':
+                if self.struct_contains_ndo(member.type) == True:
+                    return True
+        return False
+
+    #
+    # Return lists of NDO members and struct members in a given list of parameters or members
+    def getStructsAndNdos(self, item_list):
+        ndo_list = set()
+        struct_list = set()
+
+        for item in item_list:
+            paramname = item.find('name')
+            paramtype = item.find('type')
             typecategory = self.getTypeCategory(paramtype.text)
 
+            # Is this an array item?  if so, set array to the name
             is_struct=True if typecategory == 'struct' else False
-            is_count=True if param.attrib.get('len') is not None else False
+            is_count=True if item.attrib.get('len') is not None else False
+
+            joe = paramname.text
 
             if typecategory == 'handle':
                 if self.isHandleTypeNonDispatchable(paramtype.text):
-                    verb = []
-                    if operation == 'create':
-                        verb = '    // Create Wrapping Code'
-                    else:
-                        verb = '    // Cleanup Wrapping Code, if necessary'
-                    paramdecl += '    // LUGMAL::  Found NDO ' + paramname.text + '\n'
-                    paramdecl += '    // LUGMAL::  ' + verb + '\n'
-            elif (is_count == True) and (is_struct == True) and (operation == 'create'):
-                paramdecl += '    // HEY: ' + paramname.text + ' of type ' + paramtype.text + ' is an array with a count of ' + param.attrib.get('len') + '\n'
+                    ndo_list.add(item)
+            elif (is_count == True) and (is_struct == True):
+                if self.struct_contains_ndo(paramtype.text) == True:
+                    struct_list.add(item)
 
-            #if self.paramIsPointer(param):
-            #    paramdecl += '    // not watching use of pointer ' + paramname.text + '\n'
-            #else:
-            #    externsync = param.attrib.get('externsync')
-            #    if externsync == 'true':
-            #        if self.paramIsArray(param):
-            #            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-            #            paramdecl += '        ' + 'WriteObject(my_data, ' + paramname.text + '[index]);\n'
-            #            paramdecl += '    }\n'
-            #        else:
-            #            paramdecl += '    ' + 'WriteObject(my_data, ' + paramname.text + ');\n'
-            #    elif (param.attrib.get('externsync')):
-            #        if self.paramIsArray(param):
-            #            # Externsync can list pointers to arrays of members to synchronize
-            #            paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-            #            for member in externsync.split(","):
-            #                # Replace first empty [] in member name with index
-            #                element = member.replace('[]','[index]',1)
-            #                if '[]' in element:
-            #                    # Replace any second empty [] in element name with
-            #                    # inner array index based on mapping array names like
-            #                    # "pSomeThings[]" to "someThingCount" array size.
-            #                    # This could be more robust by mapping a param member
-            #                    # name to a struct type and "len" attribute.
-            #                    limit = element[0:element.find('s[]')] + 'Count'
-            #                    dotp = limit.rfind('.p')
-            #                    limit = limit[0:dotp+1] + limit[dotp+2:dotp+3].lower() + limit[dotp+3:]
-            #                    paramdecl += '        for(uint32_t index2=0;index2<'+limit+';index2++)\n'
-            #                    element = element.replace('[]','[index2]')
-            #                paramdecl += '            ' + 'WriteObject(my_data, ' + element + ');\n'
-            #            paramdecl += '    }\n'
-            #        else:
-            #            # externsync can list members to synchronize
-            #            for member in externsync.split(","):
-            #                paramdecl += '    ' + 'WriteObject(my_data, ' + member + ');\n'
-            #    else:
-            #        paramtype = param.find('type')
-            #        if paramtype is not None:
-            #            paramtype = paramtype.text
-            #        else:
-            #            paramtype = 'None'
-            #        if paramtype in uniquify_nondispatchable_objects: use isHsndleNonDispatchable() instead
-            #            if self.paramIsArray(param) and ('pPipelines' != paramname.text):
-            #                paramdecl += '    for (uint32_t index=0;index<' + param.attrib.get('len') + ';index++) {\n'
-            #                paramdecl += '        ' + 'ReadObject(my_data, ' + paramname.text + '[index]);\n'
-            #                paramdecl += '    }\n'
-            #            elif not self.paramIsPointer(param):
-            #                # Pointer params are often being created.
-            #                # They are not being read from.
-            #                paramdecl += '    ' + 'ReadObject(my_data, ' + paramname.text + ');\n'
-        if (paramdecl == ''):
-            return None
-        else:
-            return paramdecl
+        for tmp_ndo in ndo_list:
+            ndo_name = tmp_ndo.find('name')
+            fred = ndo_name.text
+
+        for tmp_struct in struct_list:
+            struct_name = tmp_struct.find('name')
+            bob = struct_name.text
+
+        return(ndo_list, struct_list)
+
+
+
+    # Generate UniqueObjects code for given struct_uses dict of objects that need to be unwrapped
+    # vector_name_set is used to make sure we don't replicate vector names
+    # first_level_param indicates if elements are passed directly into the function else they're below a ptr/struct
+    # TODO : Comment this code
+
+    #### item_list is either parameters to an API call (first_level_param = True) or elements of an array (first_level_param = False)
+    def _gen_obj_code(self, item_list, indent, prefix, array_index, first_level_param):
+        decls = ''
+        pre_code = ''
+        post_code = ''
+
+        ndo_list = set()
+        struct_list = set()
+        (ndo_list, struct_list) = self.getStructsAndNdos(item_list)
+        for item in ndo_list:
+            paramname = item.find('name')
+            paramtype = item.find('type')
+            decls += '// XXXXXXXXXXXXXXXXXXXXXXXXXX NDO    ' + paramname.text + ' of type ' + paramtype.text + '\n'
+        for item in struct_list:
+            paramname = item.find('name')
+            paramtype = item.find('type')
+            decls += '// XXXXXXXXXXXXXXXXXXXXXXXXXX STRUCT ' + paramname.text + ' of type ' + paramtype.text + '\n'
+
+
+
+        for item in item_list:
+            name = item
+
+            paramname = item.find('name')
+            paramtype = item.find('type')
+            typecategory = self.getTypeCategory(paramtype.text)
+
+            # Is this an array item?  if so, set array to the name
+            is_struct=True if typecategory == 'struct' else False
+            is_count=True if item.attrib.get('len') is not None else False
+
+            if typecategory == 'handle':
+                if self.isHandleTypeNonDispatchable(paramtype.text):
+                    if self.paramIsPointer(item):
+                        decls += '// LUGMAL::  Found NDO Pointer (' + paramname.text + ')\n'
+                    else:
+                        pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
+                        #### decls += '// LUGMAL::  Found NDO (' + paramname.text + ')\n'
+            # Structure
+            elif (is_count == True) and (is_struct == True):
+                local_prefix = ''
+                name = '%s%s' % (prefix, paramname.text)
+
+                if first_level_param:
+                    pre_code += '%sif (%s) {\n' % (indent, name)
+                else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+                    pre_code += '%sif (local_%s) {\n' % (indent, name)
+                indent += '    '
+
+             #    if array != '':
+             #        if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
+             #            count_prefix = '*'
+             #        else:
+             #            count_prefix = ''
+             #        idx = 'idx%s' % str(array_index)
+             #        array_index += 1
+             #        if first_level_param and name in param_type:
+             #            pre_code += '%slocal_%s = new safe_%s[%s%s];\n' % (indent, name, param_type[name].strip('*'), count_prefix, array)
+             #            post_code += '    if (local_%s)\n' % (name)
+             #            post_code += '        delete[] local_%s;\n' % (name)
+             #        pre_code += '%sfor (uint32_t %s=0; %s<%s%s%s; ++%s) {\n' % (indent, idx, idx, count_prefix, prefix, array, idx)
+             #        indent += '    '
+             #        if first_level_param:
+             #            pre_code += '%slocal_%s[%s].initialize(&%s[%s]);\n' % (indent, name, idx, name, idx)
+             #        local_prefix = '%s[%s].' % (name, idx)
+             #    elif ptr_type:
+             #        if first_level_param and name in param_type:
+             #            pre_code += '%slocal_%s = new safe_%s(%s);\n' % (indent, name, param_type[name].strip('*'), name)
+             #            post_code += '    if (local_%s)\n' % (name)
+             #            post_code += '        delete local_%s;\n' % (name)
+             #        local_prefix = '%s->' % (name)
+             #    else:
+             #        local_prefix = '%s.' % (name)
+             #    assert isinstance(decls, object)
+             #    (tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_uses[obj], param_type, indent, local_prefix, array_index, vector_name_set, False)
+             #    decls += tmp_decl
+             #    pre_code += tmp_pre
+             #    post_code += tmp_post
+             #    if array != '':
+             #        indent = indent[4:]
+             #        pre_code += '%s}\n' % (indent)
+             #    if ptr_type:
+             #        indent = indent[4:]
+             #        pre_code += '%s}\n' % (indent)
+             #else:
+             #    if (array_index > 0) or array != '': # TODO : This is not ideal, really want to know if we're anywhere under an array
+             #        if first_level_param:
+             #            decls += '%s%s* local_%s = NULL;\n' % (indent, struct_uses[obj], name)
+             #        if array != '' and not first_level_param: # ptrs under structs will have been initialized so use local_*
+             #            pre_code += '%sif (local_%s%s) {\n' %(indent, prefix, name)
+             #        else:
+             #            pre_code += '%sif (%s%s) {\n' %(indent, prefix, name)
+             #        indent += '    '
+             #        if array != '':
+             #            idx = 'idx%s' % str(array_index)
+             #            array_index += 1
+             #            if first_level_param:
+             #                pre_code += '%slocal_%s = new %s[%s];\n' % (indent, name, struct_uses[obj], array)
+             #                post_code += '    if (local_%s)\n' % (name)
+             #                post_code += '        delete[] local_%s;\n' % (name)
+             #            pre_code += '%sfor (uint32_t %s=0; %s<%s%s; ++%s) {\n' % (indent, idx, idx, prefix, array, idx)
+             #            indent += '    '
+             #            name = '%s[%s]' % (name, idx)
+             #        if name not in vector_name_set:
+             #            vector_name_set.add(name)
+             #        pre_code += '%slocal_%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s%s)];\n' % (indent, prefix, name, struct_uses[obj], prefix, name)
+             #        if array != '':
+             #            indent = indent[4:]
+             #            pre_code += '%s}\n' % (indent)
+             #        indent = indent[4:]
+             #        pre_code += '%s}\n' % (indent)
+             #    else:
+             #        pre_code += '%s\n' % (self.lineinfo.get())
+             #        if '->' in prefix: # need to update local struct
+             #            pre_code += '%slocal_%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s%s)];\n' % (indent, prefix, name, struct_uses[obj], prefix, name)
+             #        else:
+             #            pre_code += '%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, name, struct_uses[obj], name)
+        return decls, pre_code, post_code
+
+    def generate_wrapping_code(self, cmd):
+        """Generate C function pointer typedef for <command> Element"""
+        paramdecl = ''
+        param_pre_code = ''
+        param_post_code = ''
+        create_func = False
+        indent = '    '
+
+        proto = cmd.find('proto/name')
+        if proto.text is not None:
+            if True in [create_txt in proto.text for create_txt in ['Create', 'Allocate']]:
+                create_func = True
+
+        # Find and add any parameters that contain NDOs
+        params = cmd.findall('param')
+        (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, True)
+
+
+        if create_func == True:
+            handle_type = params[-1].find('type')
+            handle_name = params[-1].find('name')
+
+            param_post_code += '\n%sif (VK_SUCCESS == result) {\n' % (indent)
+            indent += '    '
+            param_post_code += '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % (indent)
+            param_post_code += '%suint64_t unique_id = global_unique_id++;\n' % (indent)
+            param_post_code += '%sdev_data->unique_id_mapping[unique_id] = reinterpret_cast<uint64_t &>(*%s);\n' % (indent, handle_name.text)
+            param_post_code += '%s*%s = reinterpret_cast<%s&>(unique_id);\n' % (indent, handle_name.text, handle_type.text)
+            indent = indent[4:]
+            param_post_code += '%s}\n' % (indent)
+
+#        else:
+
+
+
+
+        #for param in params:
+
+        #    paramname = param.find('name')
+        #    paramtype = param.find('type')
+        #    typecategory = self.getTypeCategory(paramtype.text)
+
+        #    is_struct=True if typecategory == 'struct' else False
+        #    is_count=True if param.attrib.get('len') is not None else False
+
+        #    if typecategory == 'handle':
+        #        if self.isHandleTypeNonDispatchable(paramtype.text):
+        #            verb = []
+        #            if operation == 'create':
+        #                verb = '    // Create Wrapping Code'
+        #            else:
+        #                verb = '    // Cleanup Wrapping Code, if necessary'
+        #            paramdecl += '    // LUGMAL::  Found NDO ' + paramname.text + '\n'
+        #            paramdecl += '    // LUGMAL::  ' + verb + '\n'
+        #    elif (is_count == True) and (is_struct == True) and (operation == 'create'):
+        #        paramdecl += '    // HEY: ' + paramname.text + ' of type ' + paramtype.text + ' is an array with a count of ' + param.attrib.get('len') + '\n'
+
+        return paramdecl, param_pre_code, param_post_code
 
     #
     # Capture command parameter info needed to wrap NDOs
@@ -4073,19 +4327,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         ]
         if name in interface_functions:
             return
-        special_functions = [
-            'vkGetDeviceProcAddr',
-            'vkGetInstanceProcAddr',
-            'vkCreateDevice',
-            'vkDestroyDevice',
-            'vkCreateInstance',
-            'vkDestroyInstance',
-            'vkAllocateCommandBuffers',
-            'vkFreeCommandBuffers',
-            'vkCreateDebugReportCallbackEXT',
-            'vkDestroyDebugReportCallbackEXT',
-        ]
-        if name in special_functions:
+        if name in self.no_autogen_list:
             decls = self.makeCDecls(cmdinfo.elem)
             self.appendSection('command', '')
             self.appendSection('command', '// declare only')
@@ -4100,12 +4342,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             self.appendSection('command', '// TODO - not wrapping EXT function ' + name)
             return
 
-        # Determine first if this function needs to be intercepted
-        manage_ndo_wrapping = self.generate_wrapping_code(cmdinfo.elem, 'create')
-        if manage_ndo_wrapping is None:
-            return
+        (api_decls, api_pre, api_post) = self.generate_wrapping_code(cmdinfo.elem)
+        #if api_pre is None:
+        #    return
 
-        cleanup_ndo_wrapping = self.generate_wrapping_code(cmdinfo.elem, 'cleanup')
         # record that the function will be intercepted
         if (self.featureExtraProtect != None):
             self.intercepts += [ '#ifdef %s' % self.featureExtraProtect ]
@@ -4115,7 +4355,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
         OutputGenerator.genCmd(self, cmdinfo, name)
 
-
+        indent = '    ' # indent level for generated code
         decls = self.makeCDecls(cmdinfo.elem)
         self.appendSection('command', '')
         self.appendSection('command', decls[0][:-1])
@@ -4125,10 +4365,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         dispatchable_type = cmdinfo.elem.find('param/type').text
         dispatchable_name = cmdinfo.elem.find('param/name').text
         self.appendSection('command', '    layer_data *dev_data = get_my_data_ptr(get_dispatch_key('+dispatchable_name+'), layer_data_map);')
-        if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
-            self.appendSection('command', '    VkLayerInstanceDispatchTable *pTable = dev_data->instance_dispatch_table;')
-        else:
-            self.appendSection('command', '    VkLayerDispatchTable *pTable = dev_data->device_dispatch_table;')
 
         # Handle return values, if any
         resulttype = cmdinfo.elem.find('proto/type')
@@ -4140,13 +4376,22 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         else:
             assignresult = ''
 
-        self.appendSection('command', "    "+"\n    ".join(str(manage_ndo_wrapping).rstrip().split("\n")))
+
+        self.appendSection('command', "    "+"\n    ".join(str(api_decls).rstrip().split("\n")))
+        # insert thread safety here
+        if api_pre != '': # lock around map uses
+            api_pre = '%s{\n%sstd::lock_guard<std::mutex> lock(global_lock);\n%s}\n' % (indent, indent, api_pre)
+        self.appendSection('command', "\n    ".join(str(api_pre).rstrip().split("\n")))
         params = cmdinfo.elem.findall('param/name')
         paramstext = ','.join([str(param.text) for param in params])
-        API = cmdinfo.elem.attrib.get('name').replace('vk','pTable->',1)
+        API = ''
+        if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
+            API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->instance_dispatch_table->',1)
+        else:
+            API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->device_dispatch_table->',1)
         self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
 
-        self.appendSection('command', "    "+"\n    ".join(str(cleanup_ndo_wrapping).rstrip().split("\n")))
+        self.appendSection('command', "\n    ".join(str(api_post).rstrip().split("\n")))
         # Return result variable, if any.
         if (resulttype != None):
             self.appendSection('command', '    return result;')
