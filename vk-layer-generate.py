@@ -776,6 +776,7 @@ class UniqueObjectsSubcommand(Subcommand):
                     else: # shadow ptr will have been initialized at this point so check it vs. source ptr
                         pre_code += '%sif (local_%s) {\n' % (indent, name)
                     indent += '    '
+
                 if array != '':
                     if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
                         count_prefix = '*'

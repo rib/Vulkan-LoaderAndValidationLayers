@@ -1978,22 +1978,22 @@ VKAPI_ATTR void VKAPI_CALL CmdPushConstants(VkCommandBuffer commandBuffer, VkPip
 
 VKAPI_ATTR void VKAPI_CALL CmdBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, VkSubpassContents contents)
 {
-// CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #883
+    // CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #883
     layer_data *my_map_data = get_my_data_ptr(get_dispatch_key(commandBuffer), layer_data_map);
-// STRUCT USES:['pRenderPassBegin']
-//LOCAL DECLS:['pRenderPassBegin']
+    // STRUCT USES:['pRenderPassBegin']
+    //LOCAL DECLS:['pRenderPassBegin']
     safe_VkRenderPassBeginInfo* local_pRenderPassBegin = NULL;
     {
-    std::lock_guard<std::mutex> lock(global_lock);
-    if (pRenderPassBegin) {
-        local_pRenderPassBegin = new safe_VkRenderPassBeginInfo(pRenderPassBegin);
-// CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #842
-        local_pRenderPassBegin->framebuffer = (VkFramebuffer)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(pRenderPassBegin->framebuffer)];
-// CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #842
-        local_pRenderPassBegin->renderPass = (VkRenderPass)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(pRenderPassBegin->renderPass)];
+        std::lock_guard<std::mutex> lock(global_lock);
+        if (pRenderPassBegin) {
+            local_pRenderPassBegin = new safe_VkRenderPassBeginInfo(pRenderPassBegin);
+            // CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #842
+            local_pRenderPassBegin->framebuffer = (VkFramebuffer)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(pRenderPassBegin->framebuffer)];
+            // CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #842
+            local_pRenderPassBegin->renderPass = (VkRenderPass)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(pRenderPassBegin->renderPass)];
+        }
     }
-    }
-// CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #980
+    // CODEGEN : file C:/dev/xgl/Vulkan-LoaderAndValidationLayers/vk-layer-generate.py line #980
     my_map_data->device_dispatch_table->CmdBeginRenderPass(commandBuffer, (const VkRenderPassBeginInfo*)local_pRenderPassBegin, contents);
     if (local_pRenderPassBegin)
         delete local_pRenderPassBegin;

@@ -4063,8 +4063,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                                                 condition=conditions[name] if conditions and name in conditions else None,
                                                 cdecl=cdecl))
         self.structMembers.append(self.StructMemberData(name=typeName, members=membersInfo))
-
-
     #
     # Determine if a struct has an NDO as a member or an embedded member
     def struct_contains_ndo(self, struct_item):
@@ -4078,7 +4076,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 if self.struct_contains_ndo(member.type) == True:
                     return True
         return False
-
     #
     # Return lists of NDO members and struct members in a given list of parameters or members
     def getStructsAndNdos(self, item_list, create_func):
@@ -4109,7 +4106,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                     struct_list.add(item)
 
         return(ndo_list, struct_list)
-
     #
     # Generate source for creating a non-dispatchable object
     def generate_create_ndo_code(self, indent, proto, params):
@@ -4119,7 +4115,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
           # LUGMAL from line 930 in vklg
             handle_type = params[-1].find('type')
             handle_name = params[-1].find('name')
-
             create_ndo_code += '%sif (VK_SUCCESS == result) {\n' % (indent)
             indent += '    '
             create_ndo_code += '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % (indent)
@@ -4129,12 +4124,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             indent = indent[4:]
             create_ndo_code += '%s}\n' % (indent)
         return create_ndo_code
-
     #
     # Generate source for destroying a non-dispatchable object
     def generate_destroy_ndo_code(self, indent, proto, params):
         destroy_ndo_code = ''
-
         if True in [destroy_txt in proto.text for destroy_txt in ['Destroy', 'Free']]:
             destroy_obj_type = params[-2].find('type')
             if self.isHandleTypeNonDispatchable(destroy_obj_type.text) == True:
@@ -4145,9 +4138,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                 destroy_ndo_code += '%sdev_data->unique_id_mapping.erase(%s_id);\n' % (indent, destroy_obj_name.text)
                 destroy_ndo_code += '%slock.unlock();\n' % (indent)
         return destroy_ndo_code
-
-
-    # Generate UniqueObjects code for given struct_uses dict of objects that need to be unwrapped
+    #
     # first_level_param indicates if elements are passed directly into the function else they're below a ptr/struct
     def _gen_obj_code(self, item_list, indent, prefix, array_index, create_func, first_level_param):
         decls = ''
@@ -4164,42 +4155,81 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         for item in ndo_list:
             paramname = item.find('name')
             paramtype = item.find('type')
-            decls += '// Detected NDO:          ' + paramname.text + ' of type ' + paramtype.text + '\n'
+            decls += '%s// Detected NDO:          %s of type %s\n' % (indent, paramname.text, paramtype.text)
         for item in struct_list:
             paramname = item.find('name')
             paramtype = item.find('type')
-            decls += '// STRUCT containing NDO: ' + paramname.text + ' of type ' + paramtype.text + '\n'
+            decls += '%s// STRUCT containing NDO: %s of type %s\n' % (indent, paramname.text, paramtype.text)
 
          # Handle all NDOs in parameter list for this command
         for item in ndo_list:
-            #name = item
-
             paramname = item.find('name')
             paramtype = item.find('type')
 
             if self.paramIsPointer(item):
-                pre_code += '%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, paramname.text)
-                #pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
+                pre_code += '%s%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, indent, paramname.text)
+                #pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
             else:
-                pre_code += '%s// LUGMAL::  Found NDO (%s)\n' % (indent, paramname.text)
-                pre_code += '%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, paramname.text, paramtype.text, paramname.text)
+                pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
 
         # Handle all structures that contain NDOs in parameter list for this command
         for item in struct_list:
             local_prefix = ''
+            paramname = item.find('name')
+            paramtype = item.find('type')
             name = '%s%s' % (prefix, paramname.text)
 
-            if first_level_param:
-                pre_code += '%sif (%s) {\n' % (indent, name)
-            else: # shadow ptr will have been initialized at this point so check it vs. source ptr
-                pre_code += '%sif (local_%s) {\n' % (indent, name)
-            indent += '    '
+            counter = item.attrib.get('len')
+            if counter is not None:
+                # We have a structure that is an array that has an NDO in it somewhere.
+                index = 'index%s' % str(array_index)
+                array_index += 1
+
+                count_prefix = '***'
+
+                if first_level_param and name == paramname.text:
+                    pre_code += '%slocal_%s = new safe_%s[%s%s];\n' % (indent, name, paramtype.text, count_prefix, paramname.text)
+                    post_code += '    if (local_%s)\n' % (name)
+                    post_code += '        delete[] local_%s;\n' % (name)
+
+                pre_code += '%sfor (uint32_t %s=0; %s<%s%s%s; ++%s) {\n' % (indent, index, index, count_prefix, prefix, paramname.text, index)
+                indent += '    '
+                if first_level_param:
+                    pre_code += '%slocal_%s[%s].initialize(&%s[%s]);\n' % (indent, name, index, name, index)
+                local_prefix = '%s[%s].' % (name, index)
+
+                #if first_level_param:
+                #    pre_code += '%sif (%s) {\n' % (indent, paramname.text)
+                #else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+                #    pre_code += '%sif (local_%s) {\n' % (indent, paramname.text)
+                #indent += '    '
+            else:
+                local_prefix = '%s.' % (name)
+                if paramname.text != "pRenderPassBegin":
+                    return '', '', ''
+                # get list of members for paramtype.text = VkBeginRenderPass 
+                struct_member_dict = dict(self.structMembers)
+                struct_members = struct_member_dict[paramtype.text]
+
+                # Need to convert commandParams to params
+
+                #### Recursive call to process sub-structs.  This needs reworking
+                ####(tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_members, indent, prefix, array_index, False, False)
+
+                if first_level_param:
+                    pre_code += '%sif (%s) {\n' % (indent, name)
+                else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+                    pre_code += '%sif (local_%s) {\n' % (indent, name)
+                indent += '    '
 
              #    if array != '':
              #        if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
              #            count_prefix = '*'
              #        else:
              #            count_prefix = ''
+
+
+
              #        idx = 'idx%s' % str(array_index)
              #        array_index += 1
              #        if first_level_param and name in param_type:
@@ -4273,23 +4303,19 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         create_ndo_code = ''
         create_func = True
         indent = '    '
-
         proto = cmd.find('proto/name')
         params = cmd.findall('param')
-
+        if proto.text == 'vkCmdBeginRenderPass':
+            indent = '    '
         if proto.text is not None:
-
             # Handle ndo create/allocate operations
             create_ndo_code = self.generate_create_ndo_code(indent, proto, params)
             if not create_ndo_code:
                 create_func = False
             else:
                 create_func = True
-
-
             # Handle ndo destroy/free operations
             destroy_ndo_code = self.generate_destroy_ndo_code(indent, proto, params)
-
             if not destroy_ndo_code:
                 # Find and process any parameters that contain NDOs
                 (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, create_func, True)
@@ -4299,12 +4325,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
             if not paramdecl and not param_pre_code and not param_post_code:
                 return '', '', ''
-
-            # LUGMAL from line 926 in vklg
-
             if param_pre_code and not destroy_ndo_code:
-                param_pre_code = '%s{\n%sstd::lock_guard<std::mmmmmutex> lock(global_lock);\n%s%s}\n' % ('    ', indent, param_pre_code, indent)
-
+                param_pre_code = '%s{\n    %sstd::lock_guard<std::mutex> lock(global_lock);\n%s%s}\n' % ('    ', indent, param_pre_code, indent)
         return paramdecl, param_pre_code, param_post_code
 
     #
@@ -4379,7 +4401,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
         # Generate the API call itself
         params = cmdinfo.elem.findall('param/name')
-        paramstext = ','.join([str(param.text) for param in params])
+        paramstext = ', '.join([str(param.text) for param in params])
         API = ''
         if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
             API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->instance_dispatch_table->',1)
