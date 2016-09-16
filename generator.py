@@ -3849,18 +3849,14 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         # Internal state - accumulators for different inner block text
         self.sections = dict([(section, []) for section in self.ALL_SECTIONS])
         self.structNames = []                             # List of Vulkan struct typenames
-        self.stypes = []                                  # Values from the VkStructureType enumeration
         self.structTypes = dict()                         # Map of Vulkan struct typename to required VkStructureType
         self.handleTypes = set()                          # Set of handle type names
         self.commands = []                                # List of CommandData records for all Vulkan commands
         self.structMembers = []                           # List of StructMemberData records for all Vulkan structs
-        self.validatedStructs = dict()                    # Map of structs type names to generated validation code for that struct type
-        self.enumRanges = dict()                          # Map of enum name to BEGIN/END range values
         self.flags = set()                                # Map of flags typenames
-        self.flagBits = dict()                            # Map of flag bits typename to list of values
         # Named tuples to store struct and command data
         self.StructType = namedtuple('StructType', ['name', 'value'])
-        self.CommandParam = namedtuple('CommandParam', ['type', 'name', 'extstructs',
+        self.CommandParam = namedtuple('CommandParam', ['type', 'name', 'ispointer', 'extstructs',
                                                         'condition', 'cdecl'])
         self.CommandData = namedtuple('CommandData', ['name', 'return_type', 'params', 'cdecl'])
         self.StructMemberData = namedtuple('StructMemberData', ['name', 'members'])
@@ -3924,15 +3920,11 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         self.headerVersion = None
         self.sections = dict([(section, []) for section in self.ALL_SECTIONS])
         self.structNames = []
-        self.stypes = []
         self.structTypes = dict()
         self.handleTypes = set()
         self.commands = []
         self.structMembers = []
-        self.validatedStructs = dict()
-        self.enumRanges = dict()
         self.flags = set()
-        self.flagBits = dict()
         self.StructMemberData = namedtuple('StructMemberData', ['name', 'members'])
 
     def endFeature(self):
@@ -4059,10 +4051,9 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             if name in lens:
                 iscount = True
             membersInfo.append(self.CommandParam(type=type, name=name,
-                                                #ispointer=self.paramIsPointer(member),
+                                                ispointer=self.paramIsPointer(member),
                                                 #isstaticarray=isstaticarray,
                                                 #isbool=True if type == 'VkBool32' else False,
-                                                #israngedenum=True if type in self.enumRanges else False,
                                                 #isconst=True if 'const' in cdecl else False,
                                                 #isoptional=False,
                                                 #iscount=iscount,
@@ -4125,12 +4116,11 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         create_ndo_code = ''
 
         if True in [create_txt in proto.text for create_txt in ['Create', 'Allocate']]:
-            create_func = True
           # LUGMAL from line 930 in vklg
             handle_type = params[-1].find('type')
             handle_name = params[-1].find('name')
 
-            create_ndo_code += '\n%sif (VK_SUCCESS == result) {\n' % (indent)
+            create_ndo_code += '%sif (VK_SUCCESS == result) {\n' % (indent)
             indent += '    '
             create_ndo_code += '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % (indent)
             create_ndo_code += '%suint64_t unique_id = global_unique_id++;\n' % (indent)
@@ -4148,13 +4138,12 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if True in [destroy_txt in proto.text for destroy_txt in ['Destroy', 'Free']]:
             destroy_obj_type = params[-2].find('type')
             if self.isHandleTypeNonDispatchable(destroy_obj_type.text) == True:
-                destroy_func = True
                 destroy_obj_name = params[-2].find('name')
                 destroy_ndo_code += '%sstd::unique_lock<std::mutex> lock(global_lock);\n' % (indent)
-                destroy_ndo_code += '%suint64_t local_%s = reinterpret_cast<uint64_t &>(%s);\n' % (indent, destroy_obj_name.text, destroy_obj_name.text)
-                destroy_ndo_code += '%s%s = (%s)dev_data->unique_id_mapping[local_%s];\n' % (indent, destroy_obj_name.text, destroy_obj_type.text, destroy_obj_name.text)
-                destroy_ndo_code += '%sdev_data->unique_id_mapping.erase(local%s);\n' % (indent, destroy_obj_name.text)
-                destroy_ndo_code += '%slock.unlock();}\n' % (indent)
+                destroy_ndo_code += '%suint64_t %s_id = reinterpret_cast<uint64_t &>(%s);\n' % (indent, destroy_obj_name.text, destroy_obj_name.text)
+                destroy_ndo_code += '%s%s = (%s)dev_data->unique_id_mapping[%s_id];\n' % (indent, destroy_obj_name.text, destroy_obj_type.text, destroy_obj_name.text)
+                destroy_ndo_code += '%sdev_data->unique_id_mapping.erase(%s_id);\n' % (indent, destroy_obj_name.text)
+                destroy_ndo_code += '%slock.unlock();\n' % (indent)
         return destroy_ndo_code
 
 
@@ -4282,7 +4271,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         param_pre_code = ''
         param_post_code = ''
         create_ndo_code = ''
-        create_func = False
+        create_func = True
         indent = '    '
 
         proto = cmd.find('proto/name')
@@ -4292,22 +4281,29 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
             # Handle ndo create/allocate operations
             create_ndo_code = self.generate_create_ndo_code(indent, proto, params)
+            if not create_ndo_code:
+                create_func = False
+            else:
+                create_func = True
+
 
             # Handle ndo destroy/free operations
             destroy_ndo_code = self.generate_destroy_ndo_code(indent, proto, params)
 
-            # Find and process any parameters that contain NDOs
-            (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, create_func, True)
+            if not destroy_ndo_code:
+                # Find and process any parameters that contain NDOs
+                (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, create_func, True)
 
-            param_post_code = param_post_code.join(create_ndo_code)
-            param_pre_code = param_pre_code.join(destroy_ndo_code)
+            param_post_code = param_post_code + create_ndo_code
+            param_pre_code = param_pre_code + destroy_ndo_code
 
             if not paramdecl and not param_pre_code and not param_post_code:
                 return '', '', ''
 
             # LUGMAL from line 926 in vklg
-            if param_pre_code != '': # lock around map uses
-                param_pre_code = '%s{\n%sstd::lock_guard<std::mmmmmutex> lock(global_lock);\n%s%s}\n' % (indent, indent, param_pre_code, indent)
+
+            if param_pre_code and not destroy_ndo_code:
+                param_pre_code = '%s{\n%sstd::lock_guard<std::mmmmmutex> lock(global_lock);\n%s%s}\n' % ('    ', indent, param_pre_code, indent)
 
         return paramdecl, param_pre_code, param_post_code
 
@@ -4370,8 +4366,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if (resulttype != None and resulttype.text == 'void'):
           resulttype = None
         if (resulttype != None):
-            self.appendSection('command', '    ' + resulttype.text + ' result;')
-            assignresult = 'result = '
+        #    self.appendSection('command', '    ' + resulttype.text + ' result;')
+            assignresult = resulttype.text + ' result = '
         else:
             assignresult = ''
 
@@ -4379,7 +4375,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if api_decls:
             self.appendSection('command', "\n    ".join(str(api_decls).rstrip().split("\n")))
         if api_pre:
-            self.appendSection('command', "\n    ".join(str(api_pre).rstrip().split("\n")))
+            self.appendSection('command', "\n".join(str(api_pre).rstrip().split("\n")))
 
         # Generate the API call itself
         params = cmdinfo.elem.findall('param/name')
