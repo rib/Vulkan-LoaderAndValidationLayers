@@ -259,7 +259,7 @@ static inline void loader_init_device_extension_dispatch_table(
     VkLayerDispatchTable *table = &dev_table->core_dispatch;
     table->AcquireNextImageKHR =
         (PFN_vkAcquireNextImageKHR)gpa(dev, "vkAcquireNextImageKHR");
-    table->CreateSwapchainKHR =
+    table->CreateSwapchainKHR = 
         (PFN_vkCreateSwapchainKHR)gpa(dev, "vkCreateSwapchainKHR");
     table->DestroySwapchainKHR =
         (PFN_vkDestroySwapchainKHR)gpa(dev, "vkDestroySwapchainKHR");
