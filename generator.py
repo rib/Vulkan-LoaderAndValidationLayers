@@ -3823,7 +3823,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         # Commands to ignore
         self.intercepts = []
         self.no_autogen_list = [
-            'vkGetDeviceProcAddr',
+            'vkGetDeviceProcAddr', 
             'vkGetInstanceProcAddr',
             'vkAllocateCommandBuffers',
             'vkFreeCommandBuffers',
@@ -3842,8 +3842,6 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             'vkGetDisplayPlaneSupportedDisplaysKHR',
             'vkGetDisplayModePropertiesKHR']
 
-        # Validation conditions for some special case struct members that are conditionally validated
-        self.structMemberValidationConditions = { 'VkPipelineColorBlendStateCreateInfo' : { 'logicOp' : '{}logicOpEnable == VK_TRUE' } }
         # Header version
         self.headerVersion = None
         # Internal state - accumulators for different inner block text
@@ -3856,8 +3854,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         self.flags = set()                                # Map of flags typenames
         # Named tuples to store struct and command data
         self.StructType = namedtuple('StructType', ['name', 'value'])
-        self.CommandParam = namedtuple('CommandParam', ['type', 'name', 'ispointer', 'extstructs',
-                                                        'condition', 'cdecl'])
+        self.CommandParam = namedtuple('CommandParam', ['type', 'name', 'ispointer', 'iscount', 'len', 'extstructs', 'cdecl'])
         self.CommandData = namedtuple('CommandData', ['name', 'return_type', 'params', 'cdecl'])
         self.StructMemberData = namedtuple('StructMemberData', ['name', 'members'])
     #
@@ -4002,7 +3999,21 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if (category == 'struct' or category == 'union'):
             self.structNames.append(name)
             self.genStruct(typeinfo, name)
-
+    #
+    # Retrieve the value of the len tag
+    def getLen(self, param):
+        result = None
+        len = param.attrib.get('len')
+        if len and len != 'null-terminated':
+            # For string arrays, 'len' can look like 'count,null-terminated',
+            # indicating that we have a null terminated array of strings.  We
+            # strip the null-terminated from the 'len' field and only return
+            # the parameter specifying the string count
+            if 'null-terminated' in len:
+                result = len.split(',')[0]
+            else:
+                result = len
+        return result
     #
     # Struct parameter check generation.
     # This is a special case of the <type> tag where the contents are
@@ -4013,15 +4024,14 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
     # structs etc.)
     def genStruct(self, typeinfo, typeName):
         OutputGenerator.genStruct(self, typeinfo, typeName)
-        conditions = self.structMemberValidationConditions[typeName] if typeName in self.structMemberValidationConditions else None
         members = typeinfo.elem.findall('.//member')
         #
         # Iterate over members once to get length parameters for arrays
         lens = set()
-        #for member in members:
-        #    len = self.getLen(member)
-        #    if len:
-        #        lens.add(len)
+        for member in members:
+            len = self.getLen(member)
+            if len:
+                lens.add(len)
         #
         # Generate member info
         membersInfo = []
@@ -4056,11 +4066,10 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                                                 #isbool=True if type == 'VkBool32' else False,
                                                 #isconst=True if 'const' in cdecl else False,
                                                 #isoptional=False,
-                                                #iscount=iscount,
+                                                iscount=iscount,
                                                 #noautovalidity=True if member.attrib.get('noautovalidity') is not None else False,
-                                                #len=self.getLen(member),
+                                                len=self.getLen(member),
                                                 extstructs=member.attrib.get('validextensionstructs') if name == 'pNext' else None,
-                                                condition=conditions[name] if conditions and name in conditions else None,
                                                 cdecl=cdecl))
         self.structMembers.append(self.StructMemberData(name=typeName, members=membersInfo))
     #
@@ -4077,35 +4086,35 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
                     return True
         return False
     #
-    # Return lists of NDO members and struct members in a given list of parameters or members
-    def getStructsAndNdos(self, item_list, create_func):
-        ndo_list = set()
+    # Return list of struct members which contain, or which sub-structures contain
+    # an NDO in a given list of parameters or members
+    def getParmeterStructsWithNdos(self, item_list):
         struct_list = set()
+        for item in item_list:
+            paramtype = item.find('type')
+            typecategory = self.getTypeCategory(paramtype.text)
+            if typecategory == 'struct':
+                if self.struct_contains_ndo(paramtype.text) == True:
+                    struct_list.add(item)
 
+        return struct_list
+    #
+    # Return list of NDO members in a given list of parameters or members
+    def getNdosInParameterList(self, item_list, create_func):
+        ndo_list = set()
         if create_func == True:
             member_list = item_list[0:-1]
         else:
             member_list = item_list
-
         for item in member_list:
-            # if create_func is true, skip last item
-            # HERE
-            paramname = item.find('name')
             paramtype = item.find('type')
             typecategory = self.getTypeCategory(paramtype.text)
 
-            # Is this an array item?  if so, set array to the name
-            is_struct=True if typecategory == 'struct' else False
-            #### Why do we need a count here?  is_count=True if item.attrib.get('len') is not None else False
-
+            #TODO, Remove typecategory check.
             if typecategory == 'handle':
                 if self.isHandleTypeNonDispatchable(paramtype.text):
                     ndo_list.add(item)
-            elif is_struct == True:
-                if self.struct_contains_ndo(paramtype.text) == True:
-                    struct_list.add(item)
-
-        return(ndo_list, struct_list)
+        return ndo_list
     #
     # Generate source for creating a non-dispatchable object
     def generate_create_ndo_code(self, indent, proto, params):
@@ -4140,159 +4149,76 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         return destroy_ndo_code
     #
     # first_level_param indicates if elements are passed directly into the function else they're below a ptr/struct
-    def _gen_obj_code(self, item_list, indent, prefix, array_index, create_func, first_level_param):
+    #### item_list should be a set of 'name', and 'type' tuples somehow
+
+    def _gen_obj_code(self, struct_type, struct_name, is_ptr, is_array, indent, prefix, array_index, create_func, first_level_param):
         decls = ''
         pre_code = ''
         post_code = ''
+        struct_member_dict = dict(self.structMembers)
 
-        ndo_list = set()
-        struct_list = set()
-        (ndo_list, struct_list) = self.getStructsAndNdos(item_list, create_func)
-        if not ndo_list and not struct_list and not create_func:
-            return '', '', ''
+        # THIS STRUCTURE NEEDS TO BE LOCALIZED!!!!!!!  We already know this. It and ALL OF ITS substructures need this treatment
 
-        # Debugging Code:
-        for item in ndo_list:
-            paramname = item.find('name')
-            paramtype = item.find('type')
-            decls += '%s// Detected NDO:          %s of type %s\n' % (indent, paramname.text, paramtype.text)
-        for item in struct_list:
-            paramname = item.find('name')
-            paramtype = item.find('type')
-            decls += '%s// STRUCT containing NDO: %s of type %s\n' % (indent, paramname.text, paramtype.text)
+        local_prefix = ''
+        name = '%s%s' % (prefix, struct_name)
 
-         # Handle all NDOs in parameter list for this command
-        for item in ndo_list:
-            paramname = item.find('name')
-            paramtype = item.find('type')
+        struct_info = struct_member_dict[struct_type]
+        if is_ptr == True:
+            #if first_level_param: #### and name in struct_name:
+            #    pre_code += '%sif (%s) {\n' % (indent, name)
+            #else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+            #    pre_code += '%sif (local_%s) {\n' % (indent, name)
+            #indent += '    '
+            pre_code += '\n    // gen_obj_code found ptr name %s type %s\n' % (struct_name, struct_type)
 
-            if self.paramIsPointer(item):
-                pre_code += '%s%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, indent, paramname.text)
-                #pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
-            else:
-                pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
+        if is_array == True:
+            pre_code += '\n    // gen_obj_code found array name %s type %s\n' % (struct_name, struct_type)
+            #if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
+            count_prefix = '*'
+            #else:
+            #    count_prefix = ''
+            index = 'index%s' % str(array_index)
+            array_index += 1
+            #if first_level_param and (name == struct_name):
+            #    pre_code += '%slocal_%s = new safe_%s[%s%s];\n' % (indent, name, struct_type, count_prefix, struct_name)
+            #    post_code += '    if (local_%s)\n' % (name)
+            #    post_code += '        delete[] local_%s;\n' % (name)
+            #pre_code += '%sfor (uint32_t %s=0; %s<%s%s%s; ++%s) {\n' % (indent, index, index, count_prefix, prefix, struct_name, index)
+            #indent += '    '
+            #if first_level_param:
+            #    pre_code += '%slocal_%s[%s].initialize(&%s[%s]);\n' % (indent, name, index, name, index)
+            local_prefix = '%s[%s].' % (name, index)
 
-        # Handle all structures that contain NDOs in parameter list for this command
-        for item in struct_list:
-            local_prefix = ''
-            paramname = item.find('name')
-            paramtype = item.find('type')
-            name = '%s%s' % (prefix, paramname.text)
-
-            counter = item.attrib.get('len')
-            if counter is not None:
-                # We have a structure that is an array that has an NDO in it somewhere.
-                index = 'index%s' % str(array_index)
-                array_index += 1
-
-                count_prefix = '***'
-
-                if first_level_param and name == paramname.text:
-                    pre_code += '%slocal_%s = new safe_%s[%s%s];\n' % (indent, name, paramtype.text, count_prefix, paramname.text)
-                    post_code += '    if (local_%s)\n' % (name)
-                    post_code += '        delete[] local_%s;\n' % (name)
-
-                pre_code += '%sfor (uint32_t %s=0; %s<%s%s%s; ++%s) {\n' % (indent, index, index, count_prefix, prefix, paramname.text, index)
-                indent += '    '
-                if first_level_param:
-                    pre_code += '%slocal_%s[%s].initialize(&%s[%s]);\n' % (indent, name, index, name, index)
-                local_prefix = '%s[%s].' % (name, index)
-
-                #if first_level_param:
-                #    pre_code += '%sif (%s) {\n' % (indent, paramname.text)
-                #else: # shadow ptr will have been initialized at this point so check it vs. source ptr
-                #    pre_code += '%sif (local_%s) {\n' % (indent, paramname.text)
-                #indent += '    '
-            else:
-                local_prefix = '%s.' % (name)
-                if paramname.text != "pRenderPassBegin":
-                    return '', '', ''
-                # get list of members for paramtype.text = VkBeginRenderPass 
-                struct_member_dict = dict(self.structMembers)
-                struct_members = struct_member_dict[paramtype.text]
-
-                # Need to convert commandParams to params
-
-                #### Recursive call to process sub-structs.  This needs reworking
-                ####(tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_members, indent, prefix, array_index, False, False)
-
-                if first_level_param:
-                    pre_code += '%sif (%s) {\n' % (indent, name)
-                else: # shadow ptr will have been initialized at this point so check it vs. source ptr
-                    pre_code += '%sif (local_%s) {\n' % (indent, name)
-                indent += '    '
-
-             #    if array != '':
-             #        if 'p' == array[0] and array[1] != array[1].lower(): # TODO : Not ideal way to determine ptr
-             #            count_prefix = '*'
-             #        else:
-             #            count_prefix = ''
+            ## Is this an NDO?
+            #if self.isHandleTypeNonDispatchable(struct_member.name) == True:
+            #    if self.paramIsPointer(struct_member):
+            #        pre_code += '%s%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, indent, paramname.text)
+            #        #pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
+            #    else:
+            #        pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
 
 
+        # Now process any NDOs in this structure, and call this recursively for any structs in this struct
+        struct_members = struct_member_dict[struct_type]
+        for struct_member in struct_members:
+            if self.isHandleTypeNonDispatchable(struct_member.type) == True:
+                pre_code += '    // gen_obj_code found sub-NDO param: name %s type %s\n' % (struct_member.name, struct_member.type)
+            if struct_member.type in struct_member_dict:
+                pre_code += '    // gen_obj_code found sub-struct param: name %s type %s\n' % (struct_member.name, struct_member.type)
+            if (struct_member.len is not None):
+                pre_code += '    // gen_obj_code found sub-length param: name %s type %s\n' % (struct_member.name, struct_member.type)
+            if struct_member.iscount == True:
+                pre_code += '    // gen_obj_code found sub-count param: name %s type %s\n' % (struct_member.name, struct_member.type)
 
-             #        idx = 'idx%s' % str(array_index)
-             #        array_index += 1
-             #        if first_level_param and name in param_type:
-             #            pre_code += '%slocal_%s = new safe_%s[%s%s];\n' % (indent, name, param_type[name].strip('*'), count_prefix, array)
-             #            post_code += '    if (local_%s)\n' % (name)
-             #            post_code += '        delete[] local_%s;\n' % (name)
-             #        pre_code += '%sfor (uint32_t %s=0; %s<%s%s%s; ++%s) {\n' % (indent, idx, idx, count_prefix, prefix, array, idx)
-             #        indent += '    '
-             #        if first_level_param:
-             #            pre_code += '%slocal_%s[%s].initialize(&%s[%s]);\n' % (indent, name, idx, name, idx)
-             #        local_prefix = '%s[%s].' % (name, idx)
-             #    elif ptr_type:
-             #        if first_level_param and name in param_type:
-             #            pre_code += '%slocal_%s = new safe_%s(%s);\n' % (indent, name, param_type[name].strip('*'), name)
-             #            post_code += '    if (local_%s)\n' % (name)
-             #            post_code += '        delete local_%s;\n' % (name)
-             #        local_prefix = '%s->' % (name)
-             #    else:
-             #        local_prefix = '%s.' % (name)
-             #    assert isinstance(decls, object)
-             #    (tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_uses[obj], param_type, indent, local_prefix, array_index, vector_name_set, False)
-             #    decls += tmp_decl
-             #    pre_code += tmp_pre
-             #    post_code += tmp_post
-             #    if array != '':
-             #        indent = indent[4:]
-             #        pre_code += '%s}\n' % (indent)
-             #    if ptr_type:
-             #        indent = indent[4:]
-             #        pre_code += '%s}\n' % (indent)
-             #else:
-             #    if (array_index > 0) or array != '': # TODO : This is not ideal, really want to know if we're anywhere under an array
-             #        if first_level_param:
-             #            decls += '%s%s* local_%s = NULL;\n' % (indent, struct_uses[obj], name)
-             #        if array != '' and not first_level_param: # ptrs under structs will have been initialized so use local_*
-             #            pre_code += '%sif (local_%s%s) {\n' %(indent, prefix, name)
-             #        else:
-             #            pre_code += '%sif (%s%s) {\n' %(indent, prefix, name)
-             #        indent += '    '
-             #        if array != '':
-             #            idx = 'idx%s' % str(array_index)
-             #            array_index += 1
-             #            if first_level_param:
-             #                pre_code += '%slocal_%s = new %s[%s];\n' % (indent, name, struct_uses[obj], array)
-             #                post_code += '    if (local_%s)\n' % (name)
-             #                post_code += '        delete[] local_%s;\n' % (name)
-             #            pre_code += '%sfor (uint32_t %s=0; %s<%s%s; ++%s) {\n' % (indent, idx, idx, prefix, array, idx)
-             #            indent += '    '
-             #            name = '%s[%s]' % (name, idx)
-             #        if name not in vector_name_set:
-             #            vector_name_set.add(name)
-             #        pre_code += '%slocal_%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s%s)];\n' % (indent, prefix, name, struct_uses[obj], prefix, name)
-             #        if array != '':
-             #            indent = indent[4:]
-             #            pre_code += '%s}\n' % (indent)
-             #        indent = indent[4:]
-             #        pre_code += '%s}\n' % (indent)
-             #    else:
-             #        pre_code += '%s\n' % (self.lineinfo.get())
-             #        if '->' in prefix: # need to update local struct
-             #            pre_code += '%slocal_%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s%s)];\n' % (indent, prefix, name, struct_uses[obj], prefix, name)
-             #        else:
-             #            pre_code += '%s%s = (%s)my_map_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, name, struct_uses[obj], name)
+            #### Recursive call to process sub-structs
+            #(tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_members, indent, prefix, array_index, create_func, False)
+
+            #if first_level_param:
+            #    pre_code += '%sif (%s) {\n' % (indent, name)
+            #else: # shadow ptr will have been initialized at this point so check it vs. source ptr
+            #    pre_code += '%sif (local_%s) {\n' % (indent, name)
+            #indent += '    '
+
         return decls, pre_code, post_code
 
     def generate_wrapping_code(self, cmd):
@@ -4301,11 +4227,15 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         param_pre_code = ''
         param_post_code = ''
         create_ndo_code = ''
+        subdecl = ''
+        sub_pre_code = ''
+        sub_post_code = ''
+
         create_func = True
         indent = '    '
         proto = cmd.find('proto/name')
         params = cmd.findall('param')
-        if proto.text == 'vkCmdBeginRenderPass':
+        if proto.text == 'vkQueueSubmit':
             indent = '    '
         if proto.text is not None:
             # Handle ndo create/allocate operations
@@ -4318,10 +4248,36 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             destroy_ndo_code = self.generate_destroy_ndo_code(indent, proto, params)
             if not destroy_ndo_code:
                 # Find and process any parameters that contain NDOs
-                (paramdecl, param_pre_code, param_post_code) = self._gen_obj_code(params, indent, '', 0, create_func, True)
+                ndo_list = self.getNdosInParameterList(params, create_func)
+                struct_list = self.getParmeterStructsWithNdos(params)
 
-            param_post_code = param_post_code + create_ndo_code
-            param_pre_code = param_pre_code + destroy_ndo_code
+                # Handle all NDOs in parameter list for this command
+                for item in ndo_list:
+                    paramname = item.find('name')
+                    paramtype = item.find('type')
+                    paramdecl += '%s// Detected NDO:          %s of type %s\n' % (indent, paramname.text, paramtype.text)
+
+                    if self.paramIsPointer(item):
+                        param_pre_code += '%s%s// LUGMAL::  Found NDO Pointer (%s)\n' % (indent, indent, paramname.text)
+                        #param_pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
+                    else:
+                        param_pre_code += '%s%s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, indent, paramname.text, paramtype.text, paramname.text)
+
+                struct_member_dict = dict(self.structMembers)
+                for item in struct_list:
+                    paramname = item.find('name')
+                    paramtype = item.find('type')
+                    struct_info = struct_member_dict[paramtype.text]
+                    paramdecl += '%s// STRUCT containing NDO: %s of type %s\n' % (indent, paramname.text, paramtype.text)
+                    is_array = self.paramIsArray(item)
+                    is_ptr = self.paramIsPointer(item)
+                    (subdecl, sub_pre_code, sub_post_code) = self._gen_obj_code(paramtype.text, paramname.text, is_ptr, is_array, indent, '', 0, create_func, True)
+                    (subdecl, sub_pre_code, sub_post_code) = self._gen_obj_code(struct_info, paramname.text, is_ptr, is_array, indent, '', 0, create_func, True)
+
+
+            param_post_code = param_post_code + sub_post_code + create_ndo_code
+            param_pre_code = param_pre_code + sub_pre_code + destroy_ndo_code
+            paramdecl = paramdecl + subdecl
 
             if not paramdecl and not param_pre_code and not param_post_code:
                 return '', '', ''
