@@ -4079,26 +4079,33 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         return '%sstd::lock_guard<std::mutex> lock(global_lock);\n' % indent
     #
     # Output UO code for a single NDO (ndo_count is NULL) or a counted list of NDOs
-    def outputNDOs(self, ndo_type, ndo_name, ndo_count, prefix, index, indent):
+    def outputNDOs(self, ndo_type, ndo_name, ndo_count, prefix, index, indent, top_level):
         decl_code = ''
         pre_call_code = ''
         post_call_code = ''
+        if top_level == True:
+            local_prefix = ''
+        else:
+            local_prefix = prefix
 
         if ndo_count is not None:
-            decl_code += '%s%s *local_%s = NULL;\n' % (indent, ndo_type, ndo_name)
+            if top_level == True:
+                decl_code += '%s%s *local_%s%s = NULL;\n' % (indent, ndo_type, local_prefix, ndo_name)
             pre_call_code += '%s    if (%s) {\n' % (indent, ndo_name)
             indent += '    '
-            pre_call_code += '%s    local_%s = new %s[%s];\n' % (indent, ndo_name, ndo_type, ndo_count)
+            if top_level == True:
+                pre_call_code += '%s    local_%s%s = new %s[%s];\n' % (indent, local_prefix, ndo_name, ndo_type, ndo_count)
             pre_call_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, ndo_count, index)
             indent += '    '
-            pre_call_code += '%s    local_%s[%s] = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s[%s])];\n' % (indent, ndo_name, index, ndo_type, ndo_name, index)
+            pre_call_code += '%s    local_%s%s[%s] = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s[%s])];\n' % (indent, local_prefix, ndo_name, index, ndo_type, ndo_name, index)
             indent = indent[4:]
             pre_call_code += '%s    }\n' % indent
-            indent = indent[4:]
-            pre_call_code += '%s    }\n' % indent
-            post_call_code += '%sif (local_%s)\n' % (indent, ndo_name)
-            indent += '    '
-            post_call_code += '%sdelete[] local_%s;\n' % (indent, ndo_name)
+            if top_level == True:
+                indent = indent[4:]
+                pre_call_code += '%s    }\n' % indent
+                post_call_code += '%sif (local_%s%s)\n' % (indent, local_prefix, ndo_name)
+                indent += '    '
+                post_call_code += '%sdelete[] local_%s;\n' % (indent, ndo_name)
         else:
             pre_call_code += '%s    %s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, ndo_name, ndo_type, ndo_name)
         return decl_code, pre_call_code, post_call_code
@@ -4180,7 +4187,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
 
     #
     # first_level_param indicates if elements are passed directly into the function else they're below a ptr/struct
-    def _gen_obj_code(self, members, item_name, indent, prefix, array_index, create_func, first_level_param):
+    def uniquify_members(self, members, item_name, indent, prefix, array_index, create_func, first_level_param):
         decls = ''
         pre_code = ''
         post_code = ''
@@ -4197,25 +4204,27 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             if self.isHandleTypeNonDispatchable(member.type) == True:
                 if member.len is not None:
                     pre_code += '        // [%s] gen_obj_code found NDOARRAY: name %s type %s len %s\n' % (name, member.name, member.type, member.len)
-
-###################Was right here.  Need to fix access to be able to set this islocal flag. LUGMAL
-
-                    self.struct_member_dict[member].islocal = True
                 else:
                     pre_code += '        // [%s] gen_obj_code found NDO: name %s type %s\n' % (name, member.name, member.type)
-                (tmp_decl, tmp_pre, tmp_post) = self.outputNDOs(member.type, member.name, member.len, prefix, index, indent)
+                (tmp_decl, tmp_pre, tmp_post) = self.outputNDOs(member.type, member.name, member.len, local_prefix, index, indent, first_level_param)
                 decls += tmp_decl
-                #### tmp_pre = "\n    ".join(str(tmp_pre).rstrip().split("\n"))
                 pre_code += tmp_pre
                 post_code += tmp_post
             elif member.type in struct_member_dict:
+
+                #########
+                #########
+                ######### LUGMAL right here, about to add first safe-struct handler, starting with CreatePipelineLayout
+                #########
+                #########
+
                 if (first_level_param == False) or ((first_level_param == True) and self.struct_contains_ndo(member.type)):
                     if member.len is not None:
                         pre_code += '    // [%s] gen_obj_code found STRUCTARRAY: name %s type %s len %s\n' % (name, member.name, member.type, member.len)
                     else:
                         pre_code += '    // [%s] gen_obj_code found STRUCT: name %s type %s\n' % (name, member.name, member.type)
                         struct_info = struct_member_dict[member.type]
-                        (tmp_decl, tmp_pre, tmp_post) = self._gen_obj_code(struct_info, member.name, indent, local_prefix, array_index, create_func, False)
+                        (tmp_decl, tmp_pre, tmp_post) = self.uniquify_members(struct_info, member.name, indent, local_prefix, array_index, create_func, False)
                         decls += tmp_decl
                         pre_code += tmp_pre
                         post_code += tmp_post
@@ -4252,7 +4261,7 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             # Handle ndo destroy/free operations
             destroy_ndo_code = self.generate_destroy_ndo_code(indent, proto, params)
             if not destroy_ndo_code:
-                (subdecl, sub_pre_code, sub_post_code) = self._gen_obj_code(cmd_info, proto.text, indent, '', 0, create_func, True)
+                (subdecl, sub_pre_code, sub_post_code) = self.uniquify_members(cmd_info, proto.text, indent, '', 0, create_func, True)
 
             param_post_code = param_post_code + sub_post_code + create_ndo_code
             param_pre_code = param_pre_code + sub_pre_code + destroy_ndo_code
@@ -4315,15 +4324,19 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
             # Store pointer/array/string info
             # Check for parameter name in lens set
             iscount = False
-            islocal = False
             if name in lens:
                 iscount = True
+            islocal = False
+            len = self.getLen(member)
+            if self.isHandleTypeNonDispatchable(type) == True:
+                if len is not None:
+                    islocal = True
             membersInfo.append(self.CommandParam(type=type,
                                                  name=name,
                                                  ispointer=self.paramIsPointer(member),
                                                  isconst=True if 'const' in cdecl else False,
                                                  iscount=iscount,
-                                                 len=self.getLen(member),
+                                                 len=len,
                                                  extstructs=member.attrib.get('validextensionstructs') if name == 'pNext' else None,
                                                  cdecl=cdecl,
                                                  islocal=islocal))
@@ -4356,28 +4369,8 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         dispatchable_type = cmdinfo.elem.find('param/type').text
         dispatchable_name = cmdinfo.elem.find('param/name').text
 
-
-        cmd_member_dict = dict(self.cmdMembers)
-        # Handle the need for const casts in the down-chain API call
-        call_sig = '    layer_data *dev_data = get_my_data_ptr(get_dispatch_key(%s), layer_data_map);' % dispatchable_name
-        params = cmd_member_dict[cmdname]
-        for param in params:
-            if param.islocal == True:
-                ##call_sig = call_sig.replace(ld, '(%s %s)local_%s' % ('const, local_decls[ld], ld))
-                indent = ' ' ##########################
-
-        # for anything that has 'local_' in front of it, change it to use const between the < and the u in <uint64_t
-
-        ####for ld in local_decls:
-        ####    const_qualifier = ''
-        ####    for p in proto.params:
-        ####        if ld == p.name and 'const' in p.ty:
-        ####            const_qualifier = 'const'
-        ####    call_sig = call_sig.replace(ld, '(%s %s)local_%s' % (const_qualifier, local_decls[ld], ld))
-
-####    self.appendSection('command', '    layer_data *dev_data = get_my_data_ptr(get_dispatch_key('+dispatchable_name+'), layer_data_map);')
-        self.appendSection('command', call_sig)
-
+        # Generate local instance/pdev/device data lookup
+        self.appendSection('command', '    layer_data *dev_data = get_my_data_ptr(get_dispatch_key('+dispatchable_name+'), layer_data_map);')
 
         # Handle return values, if any
         resulttype = cmdinfo.elem.find('proto/type')
@@ -4395,14 +4388,27 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         if api_pre:
             self.appendSection('command', "\n".join(str(api_pre).rstrip().split("\n")))
 
+        #
         # Generate the API call itself
+        # Gather the paramter items
         params = cmdinfo.elem.findall('param/name')
+        # Pull out the text for each of the parameters, separate them by commas in a list
         paramstext = ', '.join([str(param.text) for param in params])
-        API = ''
+        # If any of these paramters has been replaced by a local var, fix up the list
+        cmd_member_dict = dict(self.cmdMembers)
+        params = cmd_member_dict[cmdname]
+        for param in params:
+            if param.islocal == True:
+                if param.ispointer == True:
+                    paramstext = paramstext.replace(param.name, '(%s %s*)local_%s' % ('const', param.type, param.name))
+                else:
+                    paramstext = paramstext.replace(param.name, '(%s %s)local_%s' % ('const', param.type, param.name))
+        # Use correct dispatch table
         if dispatchable_type in ["VkPhysicalDevice", "VkInstance"]:
             API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->instance_dispatch_table->',1)
         else:
             API = cmdinfo.elem.attrib.get('name').replace('vk','dev_data->device_dispatch_table->',1)
+        # Put all this together for the final down-chain call
         self.appendSection('command', '    ' + assignresult + API + '(' + paramstext + ');')
 
         # And add the post-API-call codegen
