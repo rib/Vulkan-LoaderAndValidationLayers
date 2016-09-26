@@ -4083,31 +4083,42 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         decl_code = ''
         pre_call_code = ''
         post_call_code = ''
-        if top_level == True:
-            local_prefix = ''
-        else:
-            local_prefix = prefix
 
         if ndo_count is not None:
             if top_level == True:
-                decl_code += '%s%s *local_%s%s = NULL;\n' % (indent, ndo_type, local_prefix, ndo_name)
-            pre_call_code += '%s    if (%s) {\n' % (indent, ndo_name)
+                decl_code += '%s%s *local_%s%s = NULL;\n' % (indent, ndo_type, prefix, ndo_name)
+            pre_call_code += '%s    if (%s%s) {\n' % (indent, prefix, ndo_name)
             indent += '    '
             if top_level == True:
-                pre_call_code += '%s    local_%s%s = new %s[%s];\n' % (indent, local_prefix, ndo_name, ndo_type, ndo_count)
-            pre_call_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, ndo_count, index)
-            indent += '    '
-            pre_call_code += '%s    local_%s%s[%s] = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s[%s])];\n' % (indent, local_prefix, ndo_name, index, ndo_type, ndo_name, index)
+                pre_call_code += '%s    local_%s%s = new %s[%s];\n' % (indent, prefix, ndo_name, ndo_type, ndo_count)
+                pre_call_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, ndo_count, index)
+                indent += '    '
+                pre_call_code += '%s    %s%s[%s] = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s[%s])];\n' % (indent, prefix, ndo_name, index, ndo_type, ndo_name, index)
+            else:
+                pre_call_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, ndo_count, index)
+                indent += '    '
+                pre_call_code += '%s    %s%s[%s] = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s[%s])];\n' % (indent, prefix, ndo_name, index, ndo_type, ndo_name, index)
+            indent = indent[4:]
+            pre_call_code += '%s    }\n' % indent
             indent = indent[4:]
             pre_call_code += '%s    }\n' % indent
             if top_level == True:
-                indent = indent[4:]
-                pre_call_code += '%s    }\n' % indent
-                post_call_code += '%sif (local_%s%s)\n' % (indent, local_prefix, ndo_name)
+                post_call_code += '%sif (local_%s%s)\n' % (indent, prefix, ndo_name)
                 indent += '    '
                 post_call_code += '%sdelete[] local_%s;\n' % (indent, ndo_name)
         else:
-            pre_call_code += '%s    %s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, ndo_name, ndo_type, ndo_name)
+            if top_level == True:
+                pre_call_code += '%s    %s = (%s)dev_data->unique_id_mapping[reinterpret_cast<uint64_t &>(%s)];\n' % (indent, ndo_name, ndo_type, ndo_name)
+            else:
+                # Make temp copy of this var with the 'local' removed. It may be better to not pass in 'local_'
+                # as part of the string and explicitly print it
+                fix = str(prefix).strip('local_');
+                pre_call_code += '%s    if (%s%s) {\n' % (indent, fix, ndo_name)
+                indent += '    '
+                pre_call_code += '%s    %s%s = (%s)dev_data->unique_id_mapping[reinterpret_cast<const uint64_t &>(%s%s)];\n' % (indent, prefix, ndo_name, ndo_type, fix, ndo_name)
+                indent = indent[4:]
+                pre_call_code += '%s    }\n' % indent
+
         return decl_code, pre_call_code, post_call_code
     #
     # Determine if a struct has an NDO as a member or an embedded member
@@ -4193,41 +4204,104 @@ class UniqueObjectsOutputGenerator(OutputGenerator):
         post_code = ''
         struct_member_dict = dict(self.structMembers)
 
-        local_prefix = ''
+        if item_name == 'vkQueueSubmit':   #### LUGMAL DEBUG
+            indent = indent                        #### LUGMAL DEBUG  just a spot to set a breakpoint on
+
         name = '%s%s' % (prefix, item_name)
         index = 'index%s' % str(array_index)
         array_index += 1
-        local_prefix = '%s[%s].' % (name, array_index)
 
         # Now process any NDOs in this structure, and call this recursively for any structs in this struct
         for member in members:
+            # Handle NDOs
             if self.isHandleTypeNonDispatchable(member.type) == True:
                 if member.len is not None:
-                    pre_code += '        // [%s] gen_obj_code found NDOARRAY: name %s type %s len %s\n' % (name, member.name, member.type, member.len)
+                    pre_code += '        // [%s] gen_obj_code found NDOARRAY: name %s type %s len %s\n' % (name, member.name, member.type, member.len)    #### LUGMAL DEBUG
                 else:
-                    pre_code += '        // [%s] gen_obj_code found NDO: name %s type %s\n' % (name, member.name, member.type)
-                (tmp_decl, tmp_pre, tmp_post) = self.outputNDOs(member.type, member.name, member.len, local_prefix, index, indent, first_level_param)
-                decls += tmp_decl
-                pre_code += tmp_pre
-                post_code += tmp_post
+                    pre_code += '        // [%s] gen_obj_code found NDO: name %s type %s\n' % (name, member.name, member.type)                            #### LUGMAL DEBUG
+                count_name = member.len  
+                if (count_name is not None) and (first_level_param == False):
+                    count_name = '%s->%s' % (item_name, member.len)
+
+                if (first_level_param == False) or (create_func == False):
+                    (tmp_decl, tmp_pre, tmp_post) = self.outputNDOs(member.type, member.name, count_name, prefix, index, indent, first_level_param)
+                    decls += tmp_decl
+                    pre_code += tmp_pre
+                    post_code += tmp_post
+            # Handle Structs that contain NDOs at some level
             elif member.type in struct_member_dict:
-
-                #########
-                #########
-                ######### LUGMAL right here, about to add first safe-struct handler, starting with CreatePipelineLayout
-                #########
-                #########
-
-                if (first_level_param == False) or ((first_level_param == True) and self.struct_contains_ndo(member.type)):
+                # All structs at first level will have an NDO
+                ######### if (first_level_param == False) or ((first_level_param == True) and self.struct_contains_ndo(member.type)):
+                if self.struct_contains_ndo(member.type) == True:
+                    # Struct Array
                     if member.len is not None:
-                        pre_code += '    // [%s] gen_obj_code found STRUCTARRAY: name %s type %s len %s\n' % (name, member.name, member.type, member.len)
-                    else:
-                        pre_code += '    // [%s] gen_obj_code found STRUCT: name %s type %s\n' % (name, member.name, member.type)
+
+                        pre_code += '%s    // [%s] gen_obj_code found STRUCTARRAY: name %s type %s len %s\n' % (indent, name, member.name, member.type, member.len)  #### LUGMAL DEBUG
+                        # Update struct prefix
+                        if first_level_param == True:
+                            new_prefix = 'local_%s' % member.name
+                        else:
+                            new_prefix = '%s%s' % (prefix, member.name)
+
+                        # Declare safe_VarType for struct
+                        decls += '%ssafe_%s *%s = NULL;\n' % (indent, member.type, new_prefix)
+                        pre_code += '%s    if (%s) {\n' % (indent, member.name)
+                        indent += '    '
+                        pre_code += '%s    %s = new safe_%s[%s];\n' % (indent, new_prefix, member.type, member.len)
+                        pre_code += '%s    for (uint32_t %s = 0; %s < %s; ++%s) {\n' % (indent, index, index, member.len, index)
+                        indent += '    '
+                        pre_code += '%s    %s[%s].initialize(&%s[%s]);\n' % (indent, new_prefix, index, member.name, index)
+
+                        local_prefix = '%s[%s].' % (new_prefix, index)
+
+                        # Process sub-structs in this struct
                         struct_info = struct_member_dict[member.type]
                         (tmp_decl, tmp_pre, tmp_post) = self.uniquify_members(struct_info, member.name, indent, local_prefix, array_index, create_func, False)
                         decls += tmp_decl
                         pre_code += tmp_pre
                         post_code += tmp_post
+
+                        # Clean up local declarations
+                        indent = indent[4:]
+                        pre_code += '%s    }\n' % indent
+                        indent = indent[4:]
+                        pre_code += '%s    }\n' % indent
+                        post_code += '%sif (local_%s%s)\n' % (indent, prefix, member.name)
+                        if member.len is not None:
+                            post_code += '%s    delete[] local_%s%s;\n' % (indent, prefix, member.name)
+                        else:
+                            post_code += '%s    delete local_%s%s;\n' % (indent, prefix, member.name)
+
+                    # Single Struct
+                    else:
+                        # Update struct prefix
+                        if first_level_param == True:
+                            new_prefix = 'local_%s->' % member.name
+                        else:
+                            new_prefix = '%s%s->' % (prefix, member.name)
+
+                        # Declare safe_VarType for struct
+                        decls += '%ssafe_%s *local_%s%s = NULL;\n' % (indent, member.type, prefix, member.name)
+                        pre_code += '%s    if (%s) {\n' % (indent, member.name)
+                        indent += '    '
+                        pre_code += '%s    local_%s%s = new safe_%s(%s);\n' % (indent, prefix, member.name, member.type, member.name)
+
+                        # Process sub-structs in this struct
+                        pre_code += '%s    // [%s] gen_obj_code found STRUCT: name %s type %s\n' % (indent, name, member.name, member.type)  #### LUGMAL DEBUG
+                        struct_info = struct_member_dict[member.type]
+                        (tmp_decl, tmp_pre, tmp_post) = self.uniquify_members(struct_info, member.name, indent, new_prefix, array_index, create_func, False)
+                        decls += tmp_decl
+                        pre_code += tmp_pre
+                        post_code += tmp_post
+
+                        # Clean up local declarations
+                        indent = indent[4:]
+                        pre_code += '%s    }\n' % indent
+                        post_code += '%sif (local_%s%s)\n' % (indent, prefix, member.name)
+                        if member.len is not None:
+                            post_code += '%s    delete[] local_%s%s;\n' % (indent, prefix, member.name)
+                        else:
+                            post_code += '%s    delete local_%s%s;\n' % (indent, prefix, member.name)
 
         return decls, pre_code, post_code
 
